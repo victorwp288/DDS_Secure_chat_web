@@ -23,6 +23,8 @@ export default async function handler(request, response) {
   try {
     // 1. Identity Key Pair
     const identityKeyPair = await Signal.IdentityKeyPair.generate();
+    // Get the private key instance from the key pair
+    const identityPrivKey = identityKeyPair.getPrivateKey();
     console.log("Generated identity key pair instance");
 
     // 2. Registration ID
@@ -58,8 +60,8 @@ export default async function handler(request, response) {
     const signedPrivKey = Signal.PrivateKey.generate();
     const signedPubKey = signedPrivKey.getPublicKey();
     const timestamp = Date.now();
-    // Sign the public signed prekey with the identity key pair instance directly
-    const signature = identityKeyPair.sign(signedPubKey.serialize());
+    // Sign the public signed prekey using the extracted identity private key
+    const signature = identityPrivKey.sign(signedPubKey.serialize());
     const signedPreKeyRecord = new Signal.SignedPreKeyRecord(
       signedPreKeyId,
       timestamp,
@@ -96,9 +98,7 @@ export default async function handler(request, response) {
         publicKey: arrayBufferToBase64(
           identityKeyPair.getPublicKey().serialize()
         ),
-        privateKey: arrayBufferToBase64(
-          identityKeyPair.getPrivateKey().serialize()
-        ), // Still need private key for client storage
+        privateKey: arrayBufferToBase64(identityPrivKey.serialize()), // Serialize the extracted private key
       },
       registrationId: registrationId,
       preKeys: preKeys, // Already serialized within loop
