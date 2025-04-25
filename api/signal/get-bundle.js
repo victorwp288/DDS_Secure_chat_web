@@ -29,11 +29,9 @@ try {
 
 export default async function handler(req, res) {
   if (!supabase) {
-    return res
-      .status(500)
-      .json({
-        message: "Server configuration error: Supabase client not initialized.",
-      });
+    return res.status(500).json({
+      message: "Server configuration error: Supabase client not initialized.",
+    });
   }
 
   if (req.method !== "GET") {

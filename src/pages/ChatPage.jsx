@@ -28,60 +28,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
-import { decryptMessage } from "../lib/signalUtils";
-
-// --- Signal Imports ---
-import {
-  SessionBuilder,
-  SessionCipher,
-  SignalProtocolAddress,
-} from "@signalapp/libsignal-client";
-import { signalStore } from "../lib/localDb"; // Assuming your IndexedDB wrapper is here
-
-// --- Base64 Helpers (copied from SignupPage.jsx) ---
-function arrayBufferToBase64(buffer) {
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64) {
-  const binary_string = atob(base64);
-  const len = binary_string.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary_string.charCodeAt(i);
-  }
-  return bytes.buffer; // Return ArrayBuffer
-}
-
-// Decode a full PreKeyBundle received from the API
-function decodePreKeyBundle(bundle) {
-    if (!bundle) return null;
-    try {
-        return {
-            registrationId: bundle.registrationId,
-            identityKey: base64ToArrayBuffer(bundle.identityKey),
-            signedPreKey: {
-                keyId: bundle.signedPreKeyId,
-                publicKey: base64ToArrayBuffer(bundle.signedPreKeyPublicKey),
-                signature: base64ToArrayBuffer(bundle.signedPreKeySignature),
-            },
-            preKey: bundle.preKeyId !== undefined && bundle.preKeyPublicKey !== undefined ? {
-                keyId: bundle.preKeyId,
-                publicKey: base64ToArrayBuffer(bundle.preKeyPublicKey),
-            } : undefined, // preKey might be optional or already used
-        };
-    } catch (error) {
-        console.error("Failed to decode pre-key bundle:", error);
-        return null;
-    }
-}
-// --- End Helpers & Imports ---
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
@@ -336,38 +282,20 @@ export default function ChatPage() {
           data.map(async (msg) => {
             if (msg.is_encrypted) {
               console.log(
-                `[FetchMessages] Message ${msg.id} is encrypted. Decrypting...`
+                `[FetchMessages] Message ${msg.id} is encrypted. Decryption needed.`
               );
+              // TODO: Implement call to /api/signal/decrypt
+              // For now, show placeholder
               try {
                 const header = JSON.parse(msg.encryption_header || "{}");
-                const ciphertext = {
-                  type: header.type,
-                  body: msg.content,
+                return {
+                  ...msg,
+                  content: `🔒 Encrypted (Type ${
+                    header.type
+                  }) - [${msg.content.substring(0, 10)}...]`,
                 };
-
-                if (
-                  typeof ciphertext.type !== "number" ||
-                  typeof ciphertext.body !== "string"
-                ) {
-                  throw new Error(
-                    "Invalid ciphertext structure from database."
-                  );
-                }
-
-                const decryptedContent = await decryptMessage(
-                  msg.profile_id,
-                  ciphertext
-                );
-                console.log(
-                  `[FetchMessages] Decryption successful for message ${msg.id}`
-                );
-                return { ...msg, content: decryptedContent }; // Return message with decrypted content
-              } catch (decryptError) {
-                console.error(
-                  `[FetchMessages] Failed to decrypt message ${msg.id}:`,
-                  decryptError
-                );
-                return { ...msg, content: "⚠️ Failed to decrypt message ⚠️" }; // Return with error content
+              } catch {
+                return { ...msg, content: "🔒 Encrypted [Invalid Header]" };
               }
             } else {
               // If not encrypted, return as is
@@ -445,45 +373,22 @@ export default function ChatPage() {
 
       console.log("[Realtime] Fetched sender profile:", senderProfile);
 
-      let finalContent = newMessageData.content;
       let contentToFormat = { ...newMessageData, profiles: senderProfile };
 
       // Check if message is encrypted and attempt decryption
       if (newMessageData.is_encrypted) {
         console.log(
-          `[Realtime] Message ${newMessageData.id} is encrypted. Attempting decryption...`
+          `[Realtime] Message ${newMessageData.id} is encrypted. Decryption needed.`
         );
+        // TODO: Implement call to /api/signal/decrypt for realtime messages
+        // Show placeholder for now
         try {
-          // Parse the header to get the type
           const header = JSON.parse(newMessageData.encryption_header || "{}");
-          const ciphertext = {
-            type: header.type,
-            body: newMessageData.content, // This is the Base64 encoded body
-          };
-
-          if (
-            typeof ciphertext.type !== "number" ||
-            typeof ciphertext.body !== "string"
-          ) {
-            throw new Error("Invalid ciphertext structure from database.");
-          }
-
-          // Decrypt using sender's ID and the ciphertext object
-          finalContent = await decryptMessage(
-            newMessageData.profile_id,
-            ciphertext
-          );
-          console.log(
-            `[Realtime] Decryption successful for message ${newMessageData.id}`
-          );
-          contentToFormat.content = finalContent; // Update content with decrypted text
-        } catch (decryptError) {
-          console.error(
-            `[Realtime] Failed to decrypt message ${newMessageData.id}:`,
-            decryptError
-          );
-          // Display an error message instead of gibberish
-          contentToFormat.content = "⚠️ Failed to decrypt message ⚠️";
+          contentToFormat.content = `🔒 Encrypted (Type ${
+            header.type
+          }) - [${newMessageData.content.substring(0, 10)}...]`;
+        } catch {
+          contentToFormat.content = "🔒 Encrypted [Invalid Header]";
         }
       } else {
         console.log(
@@ -557,123 +462,106 @@ export default function ChatPage() {
     )?.profiles;
 
     if (!recipientProfile) {
-      console.error("Could not find recipient profile in selected conversation.");
+      console.error(
+        "Could not find recipient profile in selected conversation."
+      );
       setError("Error sending message: Recipient not found.");
       return;
     }
 
     const recipientId = recipientProfile.id;
-    const recipientDeviceId = 1; // Assuming device ID 1 for simplicity
-    const recipientAddress = new SignalProtocolAddress(recipientId, recipientDeviceId);
+    // REMOVED: We don't need Signal address objects in frontend anymore
+    // const recipientAddress = new SignalProtocolAddress(
+    //   recipientId,
+    //   1
+    // );
+    // const senderAddress = new SignalProtocolAddress(profile.id, 1);
 
-    const senderAddress = new SignalProtocolAddress(profile.id, 1); // Sender also device 1
-
-    console.log(`[SendMessage] Attempting to send: "${newMessage}" to recipient ${recipientId} in convo ${selectedConversation.id}`);
+    console.log(
+      `[SendMessage] Attempting to send: "${newMessage}" to recipient ${recipientId} in convo ${selectedConversation.id}`
+    );
 
     try {
       setLoadingMessages(true); // Indicate activity
       const plaintextMessage = newMessage.trim();
       setNewMessage(""); // Clear input immediately
 
-      // 1. Check for existing session
-      let sessionExists = await signalStore.loadSession(recipientAddress.toString());
-      console.log(`[SendMessage] Session exists for ${recipientAddress}?`, !!sessionExists);
+      // --- Call Backend Encryption API ---
+      console.log(
+        `[SendMessage] Calling /api/signal/encrypt for recipient ${recipientId}...`
+      );
+      const encryptResponse = await fetch("/api/signal/encrypt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // TEMPORARY: Sending senderId in body. TODO: Use Auth header instead.
+        body: JSON.stringify({
+          senderId: profile.id,
+          recipientId: recipientId,
+          plaintext: plaintextMessage,
+        }),
+      });
 
-      // 2. If no session, fetch bundle and process it
-      if (!sessionExists) {
-        console.log(`[SendMessage] No session found for ${recipientAddress}. Fetching bundle...`);
-        const bundleResponse = await fetch(`/api/signal/get-bundle?userId=${recipientId}`);
-
-        if (!bundleResponse.ok) {
-            if (bundleResponse.status === 404) {
-                throw new Error(`Recipient (${recipientId}) key bundle not found. Cannot establish secure session.`);
-            } else {
-                const errorData = await bundleResponse.json();
-                throw new Error(`API Error fetching bundle: ${errorData.message || bundleResponse.statusText}`);
-            }
+      if (!encryptResponse.ok) {
+        let errorData = {
+          message:
+            "Encryption API failed with status: " + encryptResponse.status,
+        };
+        try {
+          errorData = await encryptResponse.json(); // Try to parse JSON error
+        } catch {
+          console.warn(
+            "[SendMessage] Failed to parse JSON error from encrypt API."
+          );
         }
-        const recipientBundleJson = await bundleResponse.json();
-        const decodedBundle = decodePreKeyBundle(recipientBundleJson);
-        if (!decodedBundle) {
-            throw new Error("Failed to decode recipient's pre-key bundle.");
-        }
-
-        console.log(`[SendMessage] Bundle received for ${recipientAddress}. Processing...`);
-        const sessionBuilder = new SessionBuilder(signalStore, senderAddress);
-        await sessionBuilder.processPreKeyBundle(recipientAddress, decodedBundle);
-        console.log(`[SendMessage] Session established with ${recipientAddress}.`);
+        console.error("[SendMessage] API Error encrypting message:", errorData);
+        throw new Error(
+          `API Error: ${errorData.message || "Failed to encrypt message"}`
+        );
       }
 
-      // 3. Encrypt the message using the session
-      console.log(`[SendMessage] Encrypting message for ${recipientAddress}...`);
-      const sessionCipher = new SessionCipher(signalStore, senderAddress);
-      const messageBuffer = new TextEncoder().encode(plaintextMessage);
-
-      // Note: Signal protocol often requires padding. For simplicity, we omit it here,
-      // but a real implementation should add PKCS#7 padding or similar.
-      const ciphertext = await sessionCipher.encrypt(recipientAddress, messageBuffer);
-      console.log(`[SendMessage] Encryption complete. Type: ${ciphertext.type}`);
-
-      if (ciphertext.type !== 3) {
-          console.warn(`[SendMessage] Expected ciphertext type 3 (PreKeyWhisperMessage), but got ${ciphertext.type}. This might happen if a session was already established and used type 1 (WhisperMessage).`);
-          // Proceeding anyway, but this might indicate a logic flow difference from strict first-message handling.
-      }
-
-      const ciphertextBase64 = arrayBufferToBase64(ciphertext.body);
-      console.log("[SendMessage] Ciphertext (Base64):", ciphertextBase64);
-
-      // --- REMOVED OLD/INCORRECT API CALL ---
-      // const response = await fetch("/api/signal/encrypt", {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify({
-      //     recipientId: recipientId,
-      //     plaintext: plaintextMessage,
-      //     // Need sender info implicitly via auth or explicitly
-      //   }),
-      // });
-      // if (!response.ok) {
-      //   let errorData = {};
-      //   try {
-      //     errorData = await response.json(); // Try to parse JSON error
-      //   } catch (parseError) {
-      //     // If response is not JSON (like a 404 HTML page)
-      //     errorData.message = await response.text();
-      //   }
-      //   console.error("API Error encrypting message:", errorData);
-      //   throw new Error(`API Error: ${errorData.message || "Failed to encrypt message"}`);
-      // }
-      // const { ciphertextBase64, messageType } = await response.json(); // Assuming API returns this
+      const { type, body: ciphertextBase64 } = await encryptResponse.json(); // Expects { type: number, body: string (base64) }
+      console.log(
+        `[SendMessage] Encryption successful via API. Type: ${type}, Ciphertext: ${ciphertextBase64.substring(
+          0,
+          20
+        )}...`
+      );
+      // --- END Backend API Call ---
 
       // --- TODO: Send to actual message storage API ---
-      console.log(`[SendMessage] TODO: Send this ciphertext to /api/messages/send`);
-      // Example payload for the *next* API call:
+      console.log(
+        `[SendMessage] TODO: Send this ciphertext to /api/messages/send`
+      );
       const messagePayload = {
-          conversation_id: selectedConversation.id,
-          sender_id: profile.id,
-          recipient_id: recipientId, // Good to include for backend routing/checks
-          ciphertext: ciphertextBase64,
-          type: ciphertext.type, // Send type (1 or 3)
+        conversation_id: selectedConversation.id,
+        sender_id: profile.id,
+        recipient_id: recipientId, // Good to include for backend routing/checks
+        ciphertext: ciphertextBase64,
+        type: type, // Send type (1 or 3)
       };
-      console.log("[SendMessage] Placeholder payload for next step:", messagePayload);
+      console.log(
+        "[SendMessage] Placeholder payload for next step:",
+        messagePayload
+      );
 
-      // For now, let's simulate adding the message locally *unencrypted*
-      // Replace this with actual sending and receiving via subscription
+      // Simulate adding the *plaintext* locally until backend is ready
+      // This will be replaced by the subscription update later
       const tempFormattedMsg = formatMessage({
         id: Date.now(), // temp ID
         profiles: profile,
-        content: `(Locally Encrypted) ${plaintextMessage}`, // Display placeholder
+        content: plaintextMessage, // Show plaintext for now
         created_at: new Date().toISOString(),
         conversation_id: selectedConversation.id,
-        sender_id: profile.id,
+        sender_id: profile.id, // Use actual sender ID
       });
       if (tempFormattedMsg) {
         setMessages((prev) => [...prev, tempFormattedMsg]);
       }
-
-
     } catch (err) {
-      console.error("[SendMessage] Error during message encryption/sending process:", err);
+      console.error(
+        "[SendMessage] Error during message encryption/sending process:",
+        err
+      );
       setError(`Error sending message: ${err.message}`);
       // Optionally, restore the input field content if sending fails
       // setNewMessage(newMessage); // Be careful not to re-trigger send on state change
