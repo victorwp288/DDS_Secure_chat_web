@@ -59,11 +59,9 @@ module.exports = async (req, res) => {
   }
 
   if (!supabase) {
-    return res
-      .status(500)
-      .json({
-        message: "Server configuration error: Database connection failed.",
-      });
+    return res.status(500).json({
+      message: "Server configuration error: Database connection failed.",
+    });
   }
 
   if (req.method !== "POST") {
@@ -84,12 +82,9 @@ module.exports = async (req, res) => {
   const { recipientId, plaintext } = req.body;
 
   if (!recipientId || typeof plaintext !== "string") {
-    return res
-      .status(400)
-      .json({
-        message:
-          "Bad Request: recipientId and plaintext (string) are required.",
-      });
+    return res.status(400).json({
+      message: "Bad Request: recipientId and plaintext (string) are required.",
+    });
   }
 
   const recipientAddress = new SignalClient.SignalProtocolAddress(
@@ -166,12 +161,10 @@ module.exports = async (req, res) => {
       console.error(
         "API/encrypt: Encryption failed due to missing sender identity key in store."
       );
-      return res
-        .status(500)
-        .json({
-          message:
-            "Internal Server Error: Sender identity configuration problem.",
-        });
+      return res.status(500).json({
+        message:
+          "Internal Server Error: Sender identity configuration problem.",
+      });
     }
     // Generic error
     return res

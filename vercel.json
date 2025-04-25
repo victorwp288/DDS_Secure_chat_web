@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/**/*.cjs": {
+      "runtime": "nodejs20.x"
+    }
+  }
+}
