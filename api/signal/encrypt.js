@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
-import SignalClient from "@signalapp/libsignal-client";
+// Change import style to CommonJS require for better compatibility
+const SignalClient = require("@signalapp/libsignal-client");
 
 // --- Base64 Helpers (needed for decoding fetched bundle) ---
 // (Simplified: Assuming these exist or are copied from elsewhere if needed)
