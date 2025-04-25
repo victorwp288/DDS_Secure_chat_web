@@ -23,9 +23,18 @@ export default async function handler(request, response) {
   try {
     // 1. Identity Key Pair
     const identityKeyPair = await Signal.IdentityKeyPair.generate();
-    // Get the private key instance from the key pair
-    const identityPrivKey = identityKeyPair.getPrivateKey();
-    console.log("Generated identity key pair instance");
+    // Get the private key instance via direct property access (hypothesis)
+    const identityPrivKey = identityKeyPair.privateKey;
+    if (!identityPrivKey) {
+      // Add a check in case the property name is wrong or doesn't exist
+      console.error("Failed to access identityKeyPair.privateKey");
+      throw new Error(
+        "Could not retrieve private key from IdentityKeyPair instance. Property 'privateKey' might be incorrect or missing."
+      );
+    }
+    console.log(
+      "Generated identity key pair instance and accessed private key property"
+    );
 
     // 2. Registration ID
     const registrationId = Math.floor(Math.random() * 16380) + 1; // Still manual
@@ -98,7 +107,7 @@ export default async function handler(request, response) {
         publicKey: arrayBufferToBase64(
           identityKeyPair.getPublicKey().serialize()
         ),
-        privateKey: arrayBufferToBase64(identityPrivKey.serialize()), // Serialize the extracted private key
+        privateKey: arrayBufferToBase64(identityPrivKey.serialize()),
       },
       registrationId: registrationId,
       preKeys: preKeys, // Already serialized within loop
