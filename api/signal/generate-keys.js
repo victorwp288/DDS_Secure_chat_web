@@ -23,17 +23,23 @@ export default async function handler(request, response) {
   try {
     // 1. Identity Key Pair
     const identityKeyPair = await Signal.IdentityKeyPair.generate();
-    // Get the private key instance via direct property access (hypothesis)
     const identityPrivKey = identityKeyPair.privateKey;
     if (!identityPrivKey) {
-      // Add a check in case the property name is wrong or doesn't exist
       console.error("Failed to access identityKeyPair.privateKey");
       throw new Error(
         "Could not retrieve private key from IdentityKeyPair instance. Property 'privateKey' might be incorrect or missing."
       );
     }
+    // Add check for publicKey property as well
+    const identityPubKey = identityKeyPair.publicKey;
+    if (!identityPubKey) {
+      console.error("Failed to access identityKeyPair.publicKey");
+      throw new Error(
+        "Could not retrieve public key from IdentityKeyPair instance. Property 'publicKey' might be incorrect or missing."
+      );
+    }
     console.log(
-      "Generated identity key pair instance and accessed private key property"
+      "Generated identity key pair instance and accessed key properties"
     );
 
     // 2. Registration ID
@@ -69,15 +75,15 @@ export default async function handler(request, response) {
     const signedPrivKey = Signal.PrivateKey.generate();
     const signedPubKey = signedPrivKey.getPublicKey();
     const timestamp = Date.now();
-    // Sign the public signed prekey using the extracted identity private key
     const signature = identityPrivKey.sign(signedPubKey.serialize());
-    const signedPreKeyRecord = new Signal.SignedPreKeyRecord(
-      signedPreKeyId,
-      timestamp,
-      signedPubKey,
-      signedPrivKey,
-      signature
-    );
+    // Commented out unused variable to fix lint error
+    // const signedPreKeyRecord = new Signal.SignedPreKeyRecord(
+    //   signedPreKeyId,
+    //   timestamp,
+    //   signedPubKey,
+    //   signedPrivKey,
+    //   signature
+    // );
     console.log(`Generated signed pre-key ID ${signedPreKeyId}.`);
 
     const signedPreKeyResponse = {
@@ -104,9 +110,9 @@ export default async function handler(request, response) {
     //    The public parts might be published later.
     response.status(200).json({
       identityKeyPair: {
-        publicKey: arrayBufferToBase64(
-          identityKeyPair.getPublicKey().serialize()
-        ),
+        // Serialize the public key property
+        publicKey: arrayBufferToBase64(identityPubKey.serialize()),
+        // Serialize the extracted private key property
         privateKey: arrayBufferToBase64(identityPrivKey.serialize()),
       },
       registrationId: registrationId,
