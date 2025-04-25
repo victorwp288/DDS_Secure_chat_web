@@ -457,9 +457,10 @@ export default function ChatPage() {
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedConversation || !profile?.id) return;
 
+    // Correctly find the recipient's profile object from the participants array
     const recipientProfile = selectedConversation.participants.find(
-      (p) => p.profile_id !== profile.id
-    )?.profiles;
+      (p) => p.id !== profile.id // Compare participant's id with the current user's profile id
+    );
 
     if (!recipientProfile) {
       console.error(

@@ -94,12 +94,9 @@ export default async function handler(req, res) {
   const { recipientId, plaintext } = req.body;
 
   if (!recipientId || typeof plaintext !== "string") {
-    return res
-      .status(400)
-      .json({
-        message:
-          "Bad Request: recipientId and plaintext (string) are required.",
-      });
+    return res.status(400).json({
+      message: "Bad Request: recipientId and plaintext (string) are required.",
+    });
   }
 
   const recipientAddress = new SignalProtocolAddress(recipientId, 1); // Assume device 1
