@@ -28,13 +28,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
-import {
-  encryptMessage,
-  decryptMessage,
-  establishSession,
-  // getPreKeyBundle,
-} from "../lib/signalUtils";
-import { signalStore } from "../lib/localDb";
+import { decryptMessage } from "../lib/signalUtils";
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
@@ -522,11 +516,6 @@ export default function ChatPage() {
       return;
     }
     const recipientProfileId = recipient.id;
-    const recipientAddress = new signal.SignalProtocolAddress(
-      recipientProfileId,
-      1
-    );
-    const recipientAddressString = recipientAddress.toString();
 
     console.log(
       `[SendMessage] Attempting to send: "${content}" to recipient ${recipientProfileId} in convo ${conversationId}`
@@ -535,41 +524,60 @@ export default function ChatPage() {
     setNewMessage("");
 
     try {
-      // 1. Check if session exists, establish if not
-      const existingSession = await signalStore.loadSession(
-        recipientAddressString
+      // TODO: Replace Signal logic with fetch calls to API endpoints
+      // 1. Check if session exists (potentially via an API call or assume backend handles)
+      // const existingSession = await signalStore.loadSession(recipientAddressString);
+      console.log(
+        "TODO: [SendMessage] Check session state via API or let backend handle."
       );
 
-      if (existingSession === undefined) {
-        console.log(
-          `[SendMessage] No session found for ${recipientAddressString}. Establishing...`
-        );
-        try {
-          await establishSession(recipientProfileId);
-          console.log(
-            `[SendMessage] Session established successfully for ${recipientAddressString}.`
-          );
-        } catch (sessionError) {
-          console.error(
-            `[SendMessage] Failed to establish session for ${recipientAddressString}:`,
-            sessionError
-          );
-          setError(
-            `Failed to establish secure session: ${sessionError.message}`
-          );
-          return; // Stop sending if session fails
-        }
-      } else {
-        console.log(
-          `[SendMessage] Existing session found for ${recipientAddressString}.`
-        );
-      }
+      // if (existingSession === undefined) {
+      //   console.log(
+      //     `[SendMessage] No session found for ${recipientAddressString}. Establishing...`
+      //   );
+      //   try {
+      //     // TODO: Call establish session API endpoint
+      //     // await establishSession(recipientProfileId);
+      //     console.log(
+      //       `TODO: [SendMessage] Session established successfully via API for ${recipientProfileId}.`
+      //     );
+      //   } catch (sessionError) {
+      //     console.error(
+      //       `[SendMessage] Failed to establish session via API for ${recipientProfileId}:`,
+      //       sessionError
+      //     );
+      //     setError(
+      //       `Failed to establish secure session: ${sessionError.message}`
+      //     );
+      //     return; // Stop sending if session fails
+      //   }
+      // } else {
+      //   console.log(
+      //     `[SendMessage] Existing session found locally for ${recipientAddressString}. (May need API check)`
+      //   );
+      // }
 
-      // 2. Encrypt the message
-      console.log(`Encrypting message for ${recipientProfileId}...`);
-      const ciphertext = await encryptMessage(recipientProfileId, content); // encryptMessage takes string plaintext
+      // 2. Encrypt the message via API call
+      console.log(`Encrypting message for ${recipientProfileId} via API...`);
+      // TODO: Implement fetch to /api/signal/encrypt
+      // const ciphertext = await encryptMessage(recipientProfileId, content); // encryptMessage takes string plaintext
+      // Mocking ciphertext for now until API is ready
+      const mockCiphertextResponse = await fetch("/api/signal/encrypt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipientId: recipientProfileId,
+          plaintext: content,
+        }),
+      });
+      if (!mockCiphertextResponse.ok) {
+        const errorData = await mockCiphertextResponse.json();
+        throw new Error(errorData.message || "Encryption API failed");
+      }
+      const ciphertext = await mockCiphertextResponse.json(); // Expects { type: number, body: string (base64) }
+
       console.log(
-        `Encryption successful. Type: ${
+        `Encryption successful via API. Type: ${
           ciphertext.type
         }, Body (Base64): ${ciphertext.body.substring(0, 20)}...`
       );

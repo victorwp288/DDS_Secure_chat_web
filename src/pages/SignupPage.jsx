@@ -15,8 +15,26 @@ import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
-import { generateSignalKeys, storePreKeyBundle } from "../lib/signalUtils";
 import { signalStore } from "../lib/localDb";
+
+// --- Base64 Helpers (Needed for decoding API response) ---
+function base64ToArrayBuffer(base64) {
+  const binary_string = atob(base64);
+  const len = binary_string.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary_string.charCodeAt(i);
+  }
+  return bytes.buffer; // Return ArrayBuffer
+}
+
+function decodeKeyPair(keyPairBase64) {
+  return {
+    publicKey: base64ToArrayBuffer(keyPairBase64.publicKey),
+    privateKey: base64ToArrayBuffer(keyPairBase64.privateKey),
+  };
+}
+// --- End Helpers ---
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -106,27 +124,51 @@ export default function SignupPage() {
 
       if (!existingKeys) {
         console.log(
-          `No existing keys found. Generating Signal keys for user ${newUser.id}...`
+          `No existing keys found. Generating Signal keys via API for user ${newUser.id}...`
         );
-        const keys = await generateSignalKeys();
-        console.log(`Signal keys generated for user ${newUser.id}.`);
+
+        // Fetch keys from the API endpoint
+        const response = await fetch("/api/signal/generate-keys", {
+          method: "POST",
+        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error("API Error generating keys:", errorData);
+          throw new Error(
+            `API Error: ${errorData.message || "Failed to generate keys"}`
+          );
+        }
+        const apiResponse = await response.json();
+        console.log(`Signal keys received from API for user ${newUser.id}.`);
 
         console.log(`Storing local keys for user ${newUser.id}...`);
-        await signalStore.storeIdentityKeyPair(keys.identityKeyPair);
-        await signalStore.storeLocalRegistrationId(keys.registrationId);
-        await signalStore.storeSignedPreKey(
-          keys.signedPreKeyKeyPair.keyId,
-          keys.signedPreKeyKeyPair.keyPair
+        // Decode and store keys using signalStore
+        const decodedIdentityKeyPair = decodeKeyPair(
+          apiResponse.identityKeyPair
         );
-        for (const preKey of keys.oneTimePreKeys) {
-          await signalStore.storePreKey(preKey.keyId, preKey.keyPair);
+        await signalStore.storeIdentityKeyPair(decodedIdentityKeyPair);
+
+        await signalStore.storeLocalRegistrationId(apiResponse.registrationId);
+
+        const decodedSignedPreKey = decodeKeyPair(
+          apiResponse.signedPreKey.keyPair
+        );
+        await signalStore.storeSignedPreKey(
+          apiResponse.signedPreKey.keyId,
+          decodedSignedPreKey
+        );
+
+        for (const preKey of apiResponse.preKeys) {
+          const decodedPreKeyPair = decodeKeyPair(preKey.keyPair);
+          await signalStore.storePreKey(preKey.keyId, decodedPreKeyPair);
         }
         console.log(`Local keys stored successfully for user ${newUser.id}.`);
 
-        console.log(`Storing public pre-key bundle for user ${newUser.id}...`);
-        await storePreKeyBundle(newUser.id, keys.preKeyBundle);
+        // TODO: Implement storing the PUBLIC bundle to Supabase
+        // This likely involves creating a new API endpoint or modifying the generate-keys one
+        // to accept the user ID and store the public parts.
         console.log(
-          `Public bundle stored successfully for user ${newUser.id}.`
+          `TODO: Store public bundle parts (from apiResponse) for user ${newUser.id}.`
         );
       } else {
         console.log(
@@ -134,18 +176,31 @@ export default function SignupPage() {
         );
       }
 
-      if (newUser.identities && newUser.identities.length === 0) {
+      // Check if user needs email confirmation
+      if (
+        signUpData.session &&
+        signUpData.session.user.email_confirmed_at === null
+      ) {
         setError(
           "Account created! Please check your email to confirm your account before logging in."
         );
-      } else {
+        // Optionally sign the user out until confirmed
+        // await supabase.auth.signOut();
+      } else if (signUpData.user) {
+        // User might be auto-confirmed or already confirmed
         console.log("Navigating to chat...");
         navigate("/chat");
+      } else {
+        // Should not happen if signup succeeded, but handle defensively
+        setError(
+          "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+        );
       }
     } catch (err) {
       console.error("Error during sign up process:", err);
       if (!error) {
-        setError(`Signup failed. Please try again.`);
+        // Avoid overwriting specific errors like 'email exists'
+        setError(`Signup failed: ${err.message || "Please try again."}`);
       }
     } finally {
       setIsLoading(false);
@@ -286,7 +341,7 @@ export default function SignupPage() {
             </CardContent>
             <CardFooter className="flex justify-center">
               <p className="text-sm text-slate-400">
-                Already have an account?
+                Already have an account?{" "}
                 <Link
                   to="/login"
                   className="text-emerald-400 hover:text-emerald-300"
