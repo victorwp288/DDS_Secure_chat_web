@@ -67,10 +67,10 @@ export default async function handler(req, res) {
   // Load CJS module dynamically inside ESM handler
   const SignalClient = await import("@signalapp/libsignal-client");
 
-  // Check if the import worked and has expected properties
-  if (!SignalClient?.SignalProtocolAddress) {
+  // Check if the import worked and has expected properties under .default
+  if (!SignalClient?.default?.SignalProtocolAddress) {
     console.error(
-      "API/encrypt: Failed to dynamically load SignalClient library correctly."
+      "API/encrypt: Failed to dynamically load SignalClient library correctly (checked .default)."
     );
     return res
       .status(500)
@@ -96,11 +96,15 @@ export default async function handler(req, res) {
   // const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   // if (authError || !user) { return res.status(401).json({ message: 'Unauthorized' }); }
   // const senderId = user.id;
-  const senderId = req.body.senderId; // TEMPORARY: Get senderId from body for now
+  const senderId = req.body.senderId; // TEMPORARY
   if (!senderId) {
     return res.status(400).json({ message: "Missing senderId" });
   }
-  const senderAddress = new SignalClient.SignalProtocolAddress(senderId, 1);
+  // Access via .default
+  const senderAddress = new SignalClient.default.SignalProtocolAddress(
+    senderId,
+    1
+  );
   // --- End TODO ---
 
   const { recipientId, plaintext } = req.body;
@@ -111,10 +115,11 @@ export default async function handler(req, res) {
     });
   }
 
-  const recipientAddress = new SignalClient.SignalProtocolAddress(
+  // Access via .default
+  const recipientAddress = new SignalClient.default.SignalProtocolAddress(
     recipientId,
     1
-  ); // Assume device 1
+  );
 
   console.log(
     `API/encrypt: Request from ${senderId} to encrypt for ${recipientId}`
@@ -127,7 +132,8 @@ export default async function handler(req, res) {
     // 3. Load the decrypted state (identity key, registration id, sessions etc.) into the store.
     // For now, we simulate by creating a TEMPORARY in-memory store.
     // THIS IS INSECURE FOR PRODUCTION - KEYS ARE EPHEMERAL.
-    const senderStore = new SignalClient.InMemorySignalProtocolStore();
+    // Access via .default
+    const senderStore = new SignalClient.default.InMemorySignalProtocolStore();
     // In a real scenario, you'd load the DECRYPTED keys here:
     // e.g., await senderStore.storeIdentityKeyPair(decryptedIdentityKeyPair);
     //      await senderStore.storeLocalRegistrationId(decryptedRegistrationId);
@@ -181,7 +187,8 @@ export default async function handler(req, res) {
       }
 
       // Process the bundle using the sender's (temporary) store
-      const sessionBuilder = new SignalClient.SessionBuilder(
+      // Access via .default
+      const sessionBuilder = new SignalClient.default.SessionBuilder(
         senderStore,
         senderAddress
       );
@@ -202,11 +209,12 @@ export default async function handler(req, res) {
     }
 
     // Encrypt the message
-    const sessionCipher = new SignalClient.SessionCipher(
+    // Access via .default
+    const sessionCipher = new SignalClient.default.SessionCipher(
       senderStore,
       senderAddress
     );
-    const messageBuffer = Buffer.from(plaintext, "utf8"); // Use imported Buffer
+    const messageBuffer = Buffer.from(plaintext, "utf8");
 
     const ciphertext = await sessionCipher.encrypt(
       recipientAddress,
