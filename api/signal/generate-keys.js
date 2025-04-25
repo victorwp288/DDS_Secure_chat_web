@@ -13,17 +13,6 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-// Helper to serialize key material (assumes library methods return ArrayBuffers)
-function serializeKeyPair(keyPair) {
-  if (!keyPair || !keyPair.pubKey || !keyPair.privKey) {
-    throw new Error("Invalid keyPair object for serialization");
-  }
-  return {
-    publicKey: arrayBufferToBase64(keyPair.pubKey),
-    privateKey: arrayBufferToBase64(keyPair.privKey),
-  };
-}
-
 export default async function handler(request, response) {
   if (request.method !== "POST") {
     return response.status(405).json({ message: "Method Not Allowed" });
@@ -33,10 +22,8 @@ export default async function handler(request, response) {
 
   try {
     // 1. Identity Key Pair
-    // Assuming a static generate method exists, based on KeyHelper from old lib
-    // Or it might be `new IdentityKeyPair()`? Let's assume static for now.
     const identityKeyPair = await Signal.IdentityKeyPair.generate();
-    console.log("Generated identity key pair");
+    console.log("Generated identity key pair instance");
 
     // 2. Registration ID
     const registrationId = Math.floor(Math.random() * 16380) + 1; // Still manual
@@ -71,8 +58,8 @@ export default async function handler(request, response) {
     const signedPrivKey = Signal.PrivateKey.generate();
     const signedPubKey = signedPrivKey.getPublicKey();
     const timestamp = Date.now();
-    // Sign the public signed prekey with the private identity key
-    const signature = identityKeyPair.privKey.sign(signedPubKey.serialize());
+    // Sign the public signed prekey with the identity key pair instance directly
+    const signature = identityKeyPair.sign(signedPubKey.serialize());
     const signedPreKeyRecord = new Signal.SignedPreKeyRecord(
       signedPreKeyId,
       timestamp,
@@ -105,7 +92,14 @@ export default async function handler(request, response) {
     //    The client will need to store the private parts locally and securely.
     //    The public parts might be published later.
     response.status(200).json({
-      identityKeyPair: serializeKeyPair(identityKeyPair),
+      identityKeyPair: {
+        publicKey: arrayBufferToBase64(
+          identityKeyPair.getPublicKey().serialize()
+        ),
+        privateKey: arrayBufferToBase64(
+          identityKeyPair.getPrivateKey().serialize()
+        ), // Still need private key for client storage
+      },
       registrationId: registrationId,
       preKeys: preKeys, // Already serialized within loop
       signedPreKey: signedPreKeyResponse, // Already serialized
