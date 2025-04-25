@@ -1,10 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import {
-  SignalProtocolAddress,
-  SessionBuilder,
-  SessionCipher,
-  InMemorySignalProtocolStore, // We'll use this for temporary in-memory state
-} from "@signalapp/libsignal-client";
+import SignalClient from "@signalapp/libsignal-client";
 
 // --- Base64 Helpers (needed for decoding fetched bundle) ---
 // (Simplified: Assuming these exist or are copied from elsewhere if needed)
@@ -88,7 +83,7 @@ export default async function handler(req, res) {
   if (!senderId) {
     return res.status(400).json({ message: "Missing senderId" });
   }
-  const senderAddress = new SignalProtocolAddress(senderId, 1);
+  const senderAddress = new SignalClient.SignalProtocolAddress(senderId, 1);
   // --- End TODO ---
 
   const { recipientId, plaintext } = req.body;
@@ -99,7 +94,10 @@ export default async function handler(req, res) {
     });
   }
 
-  const recipientAddress = new SignalProtocolAddress(recipientId, 1); // Assume device 1
+  const recipientAddress = new SignalClient.SignalProtocolAddress(
+    recipientId,
+    1
+  ); // Assume device 1
 
   console.log(
     `API/encrypt: Request from ${senderId} to encrypt for ${recipientId}`
@@ -112,7 +110,7 @@ export default async function handler(req, res) {
     // 3. Load the decrypted state (identity key, registration id, sessions etc.) into the store.
     // For now, we simulate by creating a TEMPORARY in-memory store.
     // THIS IS INSECURE FOR PRODUCTION - KEYS ARE EPHEMERAL.
-    const senderStore = new InMemorySignalProtocolStore();
+    const senderStore = new SignalClient.InMemorySignalProtocolStore();
     // In a real scenario, you'd load the DECRYPTED keys here:
     // e.g., await senderStore.storeIdentityKeyPair(decryptedIdentityKeyPair);
     //      await senderStore.storeLocalRegistrationId(decryptedRegistrationId);
@@ -166,7 +164,10 @@ export default async function handler(req, res) {
       }
 
       // Process the bundle using the sender's (temporary) store
-      const sessionBuilder = new SessionBuilder(senderStore, senderAddress);
+      const sessionBuilder = new SignalClient.SessionBuilder(
+        senderStore,
+        senderAddress
+      );
       await sessionBuilder.processPreKeyBundle(recipientAddress, decodedBundle);
       console.log(`API/encrypt: Session established with ${recipientAddress}.`);
       // Note: The session state is now only in senderStore (memory) for this request.
@@ -174,7 +175,10 @@ export default async function handler(req, res) {
     }
 
     // Encrypt the message
-    const sessionCipher = new SessionCipher(senderStore, senderAddress);
+    const sessionCipher = new SignalClient.SessionCipher(
+      senderStore,
+      senderAddress
+    );
     const messageBuffer = Buffer.from(plaintext, "utf8"); // Use Buffer for Node.js
 
     const ciphertext = await sessionCipher.encrypt(
