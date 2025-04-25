@@ -28,7 +28,13 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
-// import { encryptMessage } from "@/lib/encryption"
+import {
+  encryptMessage,
+  decryptMessage,
+  establishSession,
+  // getPreKeyBundle,
+} from "../lib/signalUtils";
+import { signalStore } from "../lib/localDb";
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
@@ -268,6 +274,8 @@ export default function ChatPage() {
             content,
             created_at,
             profile_id,
+            is_encrypted,
+            encryption_header,
             profiles ( id, full_name, username, avatar_url )
           `
           )
@@ -276,7 +284,52 @@ export default function ChatPage() {
 
         if (messagesError) throw messagesError;
 
-        const formatted = data.map(formatMessage).filter(Boolean); // Format and remove nulls
+        // Decrypt messages before formatting
+        const decryptedMessages = await Promise.all(
+          data.map(async (msg) => {
+            if (msg.is_encrypted) {
+              console.log(
+                `[FetchMessages] Message ${msg.id} is encrypted. Decrypting...`
+              );
+              try {
+                const header = JSON.parse(msg.encryption_header || "{}");
+                const ciphertext = {
+                  type: header.type,
+                  body: msg.content,
+                };
+
+                if (
+                  typeof ciphertext.type !== "number" ||
+                  typeof ciphertext.body !== "string"
+                ) {
+                  throw new Error(
+                    "Invalid ciphertext structure from database."
+                  );
+                }
+
+                const decryptedContent = await decryptMessage(
+                  msg.profile_id,
+                  ciphertext
+                );
+                console.log(
+                  `[FetchMessages] Decryption successful for message ${msg.id}`
+                );
+                return { ...msg, content: decryptedContent }; // Return message with decrypted content
+              } catch (decryptError) {
+                console.error(
+                  `[FetchMessages] Failed to decrypt message ${msg.id}:`,
+                  decryptError
+                );
+                return { ...msg, content: "⚠️ Failed to decrypt message ⚠️" }; // Return with error content
+              }
+            } else {
+              // If not encrypted, return as is
+              return msg;
+            }
+          })
+        );
+
+        const formatted = decryptedMessages.map(formatMessage).filter(Boolean); // Format potentially decrypted messages
         setMessages(formatted);
       } catch (err) {
         console.error("Error fetching messages:", err);
@@ -312,8 +365,10 @@ export default function ChatPage() {
     const handleNewMessage = async (payload) => {
       console.log("[Realtime] handleNewMessage triggered:", payload);
 
+      const newMessageData = payload.new;
+
       // Check if it belongs to the current conversation (extra safety)
-      if (payload.new.conversation_id !== selectedConversation.id) {
+      if (newMessageData.conversation_id !== selectedConversation.id) {
         console.log(
           "[Realtime] Message is for a different conversation, skipping."
         );
@@ -321,31 +376,76 @@ export default function ChatPage() {
       }
 
       // Avoid adding duplicates if message already exists (e.g., from initial fetch)
-      if (messages.some((msg) => msg.id === payload.new.id)) {
+      if (messages.some((msg) => msg.id === newMessageData.id)) {
         console.log("[Realtime] Duplicate message detected, skipping.");
         return;
       }
 
       // Fetch sender profile for the new message
-      // Note: This adds an extra fetch per message. For high traffic, consider including profile data in the payload or using DB functions.
       const { data: senderProfile, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name, username, avatar_url")
-        .eq("id", payload.new.profile_id)
+        .eq("id", newMessageData.profile_id)
         .single();
 
       if (profileError) {
-        console.error("Error fetching profile for new message:", profileError);
-        // Optionally handle the error, maybe display message with 'Unknown Sender'
+        console.error(
+          "[Realtime] Error fetching profile for new message:",
+          profileError
+        );
         return;
       }
 
       console.log("[Realtime] Fetched sender profile:", senderProfile);
 
-      const formatted = formatMessage({
-        ...payload.new,
-        profiles: senderProfile,
-      });
+      let finalContent = newMessageData.content;
+      let contentToFormat = { ...newMessageData, profiles: senderProfile };
+
+      // Check if message is encrypted and attempt decryption
+      if (newMessageData.is_encrypted) {
+        console.log(
+          `[Realtime] Message ${newMessageData.id} is encrypted. Attempting decryption...`
+        );
+        try {
+          // Parse the header to get the type
+          const header = JSON.parse(newMessageData.encryption_header || "{}");
+          const ciphertext = {
+            type: header.type,
+            body: newMessageData.content, // This is the Base64 encoded body
+          };
+
+          if (
+            typeof ciphertext.type !== "number" ||
+            typeof ciphertext.body !== "string"
+          ) {
+            throw new Error("Invalid ciphertext structure from database.");
+          }
+
+          // Decrypt using sender's ID and the ciphertext object
+          finalContent = await decryptMessage(
+            newMessageData.profile_id,
+            ciphertext
+          );
+          console.log(
+            `[Realtime] Decryption successful for message ${newMessageData.id}`
+          );
+          contentToFormat.content = finalContent; // Update content with decrypted text
+        } catch (decryptError) {
+          console.error(
+            `[Realtime] Failed to decrypt message ${newMessageData.id}:`,
+            decryptError
+          );
+          // Display an error message instead of gibberish
+          contentToFormat.content = "⚠️ Failed to decrypt message ⚠️";
+        }
+      } else {
+        console.log(
+          `[Realtime] Message ${newMessageData.id} is not encrypted.`
+        );
+      }
+
+      // Format the message for the UI (using potentially decrypted content)
+      const formatted = formatMessage(contentToFormat);
       if (formatted) {
         console.log("[Realtime] Adding formatted message to state:", formatted);
         setMessages((prevMessages) => [...prevMessages, formatted]);
@@ -409,38 +509,106 @@ export default function ChatPage() {
     const conversationId = selectedConversation.id;
     const profileId = currentUser.id;
 
+    // Find recipient profile ID (assuming 1-on-1 chat)
+    const recipient = selectedConversation.participants.find(
+      (p) => p.id !== profileId
+    );
+    if (!recipient) {
+      console.error(
+        "Could not find recipient in conversation:",
+        selectedConversation
+      );
+      setError("Cannot send message: Recipient not found.");
+      return;
+    }
+    const recipientProfileId = recipient.id;
+    const recipientAddress = new signal.SignalProtocolAddress(
+      recipientProfileId,
+      1
+    );
+    const recipientAddressString = recipientAddress.toString();
+
     console.log(
-      `[SendMessage] Attempting to send: "${content}" to convo ${conversationId}`
+      `[SendMessage] Attempting to send: "${content}" to recipient ${recipientProfileId} in convo ${conversationId}`
     );
 
     setNewMessage("");
 
     try {
+      // 1. Check if session exists, establish if not
+      const existingSession = await signalStore.loadSession(
+        recipientAddressString
+      );
+
+      if (existingSession === undefined) {
+        console.log(
+          `[SendMessage] No session found for ${recipientAddressString}. Establishing...`
+        );
+        try {
+          await establishSession(recipientProfileId);
+          console.log(
+            `[SendMessage] Session established successfully for ${recipientAddressString}.`
+          );
+        } catch (sessionError) {
+          console.error(
+            `[SendMessage] Failed to establish session for ${recipientAddressString}:`,
+            sessionError
+          );
+          setError(
+            `Failed to establish secure session: ${sessionError.message}`
+          );
+          return; // Stop sending if session fails
+        }
+      } else {
+        console.log(
+          `[SendMessage] Existing session found for ${recipientAddressString}.`
+        );
+      }
+
+      // 2. Encrypt the message
+      console.log(`Encrypting message for ${recipientProfileId}...`);
+      const ciphertext = await encryptMessage(recipientProfileId, content); // encryptMessage takes string plaintext
+      console.log(
+        `Encryption successful. Type: ${
+          ciphertext.type
+        }, Body (Base64): ${ciphertext.body.substring(0, 20)}...`
+      );
+
+      // 3. Insert encrypted message into Supabase
       const { data: insertedData, error: insertError } = await supabase
         .from("messages")
         .insert({
           conversation_id: conversationId,
-          profile_id: profileId,
-          content: content,
+          profile_id: profileId, // Sender's ID
+          content: ciphertext.body, // Store Base64 encoded body
+          is_encrypted: true,
+          encryption_header: JSON.stringify({ type: ciphertext.type }), // Store type info
+          is_initial_message: ciphertext.type === 3, // Mark if it's a PreKey message
         })
         .select(); // Select the inserted row data
 
       if (insertError) {
         // Log error specifically
-        console.error("[SendMessage] Error sending message:", insertError);
+        console.error(
+          "[SendMessage] Error sending encrypted message:",
+          insertError
+        );
         setError(`Failed to send message: ${insertError.message}`);
       } else {
         // Log success
         console.log(
-          "[SendMessage] Message insert successful, data:",
+          "[SendMessage] Encrypted message insert successful, data:",
           insertedData
         );
         setError(null); // Clear previous errors on success
-        // Real-time should handle adding it to the list, so no setMessages here needed usually
       }
     } catch (err) {
-      console.error("[SendMessage] Unexpected error sending message:", err);
-      setError("An unexpected error occurred while sending.");
+      console.error(
+        "[SendMessage] Unexpected error sending encrypted message:",
+        err
+      );
+      setError(`An unexpected error occurred while sending: ${err.message}`);
+      // Consider more specific error handling based on encryption errors
     }
   };
 

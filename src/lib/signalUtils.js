@@ -1,4 +1,5 @@
-import * as signal from "@privacyresearch/libsignal-protocol-typescript";
+// import * as signal from "@privacyresearch/libsignal-protocol-typescript"; // OLD LIBRARY
+import * as signal from "@signalapp/libsignal-client"; // NEW LIBRARY
 import { supabase } from "./supabaseClient";
 import { IndexedDBStore, signalStore } from "./localDb"; // Import CLASS and INSTANCE
 
@@ -42,87 +43,118 @@ function serializeBuffers(obj) {
   return obj;
 }
 
+function deserializeBuffers(obj) {
+  if (!obj) return obj;
+  if (obj instanceof ArrayBuffer) {
+    return base64ToArrayBuffer(obj.data);
+  }
+  if (typeof obj === "object") {
+    const newObj = Array.isArray(obj) ? [] : {};
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        newObj[key] = deserializeBuffers(obj[key]); // Recursive call
+      }
+    }
+    return newObj;
+  }
+  return obj;
+}
+
 // --- End Helpers ---
 
 // Global store instance (consider scoping if needed)
 // const store = new IndexedDBStore(); // Removed as signalStore is imported and used
 
+// --- Library Initialization (Potential Requirement for WASM) ---
+// TODO: Check if signal.init() or similar is needed and where to call it.
+// Might need an async function that ensures initialization before use.
+let isSignalInitialized = false;
+async function ensureSignalInitialized() {
+  if (isSignalInitialized) return;
+  // Assuming an init function exists, adjust as necessary
+  // await signal.init();
+  isSignalInitialized = true;
+  console.log("Signal WASM Library Initialized (Placeholder)");
+}
+// --- End Initialization ---
+
 /**
- * Generates a new set of Signal Protocol keys for a user.
- * This includes an Identity Key pair, a Signed PreKey pair, and a batch of One-Time PreKeys.
- *
- * @returns {Promise<object>} An object containing the generated keys and the serialized preKeyBundle.
- * @throws {Error} If key generation fails.
+ * Generates a new set of Signal Protocol keys for a user using @signalapp/libsignal-client.
+ * NOTE: The API details here are speculative and need verification.
  */
 export const generateSignalKeys = async () => {
+  // await ensureSignalInitialized(); // Ensure WASM is ready
   try {
-    console.log("Generating Signal keys...");
+    console.log("Generating Signal keys using @signalapp/libsignal-client...");
+
+    // --- API Calls below are speculative based on common patterns ---
 
     // 1. Generate Identity Key Pair
-    const identityKeyPair = await signal.KeyHelper.generateIdentityKeyPair();
+    // The new library might have a different KeyHelper or factory method.
+    // Example: const identityKeyPair = await signal.IdentityKeyPair.generate();
+    const identityKeyPair = await signal.protocol.IdentityKeyPair.generate();
     console.log("Identity Key Pair generated.");
 
-    // 2. Generate Registration ID
-    const registrationId = await signal.KeyHelper.generateRegistrationId();
+    // 2. Generate Registration ID (might be done differently or not needed explicitly)
+    // Example: const registrationId = signal.RegistrationId.generate();
+    const registrationId = signal.protocol.RegistrationId.generate();
     console.log("Registration ID generated:", registrationId);
 
     // 3. Generate Signed PreKey Pair
-    // The keyId needs to be unique within the user's signed prekeys (e.g., timestamp or counter)
-    const signedPreKeyId = Date.now(); // Using timestamp for simplicity, consider a more robust approach
-    const signedPreKeyKeyPair = await signal.KeyHelper.generateSignedPreKey(
-      identityKeyPair,
-      signedPreKeyId
+    const signedPreKeyId = Date.now(); // Or a counter from store
+    // Example: const signedPreKey = await signal.SignedPreKey.generate(identityKeyPair, signedPreKeyId);
+    // It likely returns an object containing { id, keyPair, signature }
+    const signedPreKeyRecord = await signal.protocol.SignedPreKeyRecord.new(
+      signedPreKeyId,
+      identityKeyPair
     );
-    console.log("Signed PreKey Pair generated:", signedPreKeyId);
+    console.log("Signed PreKey generated:", signedPreKeyId);
 
     // 4. Generate One-Time PreKeys (e.g., 100)
-    const oneTimePreKeys = [];
-    // Libsignal needs key IDs starting from 1 for one-time keys
-    // Store the highest ID used for future batches.
-    const baseId = 1; // Start IDs from 1
-    for (let i = 0; i < 100; i++) {
-      const keyId = baseId + i;
-      const preKey = await signal.KeyHelper.generatePreKey(keyId);
-      oneTimePreKeys.push(preKey);
-    }
+    // Example: const oneTimePreKeys = await signal.PreKey.generateBatch(1, 100);
+    const oneTimePreKeys = await signal.protocol.PreKeyRecord.generate(100);
     console.log(`Generated ${oneTimePreKeys.length} One-Time PreKeys.`);
 
-    // 5. Create the PreKey Bundle
-    // This bundle is what others will fetch to initiate a session with this user.
-    // It needs the public parts of the keys.
+    // 5. Create the PreKey Bundle (API might differ)
+    // Example: const bundle = new signal.PreKeyBundle(registrationId, deviceId, preKeyId, preKeyPublic, signedPreKeyId, signedPreKeyPublic, signature, identityKey);
+    // The new library might have a builder or assemble it differently.
+    // We need: registrationId, identityKey (public), signedPreKey (public+sig), one *single* preKey (public)
+    // The concept of a bundle might be handled differently, maybe fetched piece by piece?
+    // For now, let's assemble what we *think* we need based on the old structure.
+
+    // Find one preKey to include in the bundle (often the one with the highest ID)
+    const bundlePreKey = oneTimePreKeys[oneTimePreKeys.length - 1]; // Just picking the last one
+
     const preKeyBundle = {
-      registrationId: registrationId,
-      identityKey: identityKeyPair.pubKey,
+      registrationId: registrationId, // Assuming this is a usable value (number?)
+      identityKey: identityKeyPair.getPublicKey().serialize(), // Assuming method to get public & serialize
       signedPreKey: {
-        keyId: signedPreKeyId,
-        publicKey: signedPreKeyKeyPair.keyPair.pubKey,
-        signature: signedPreKeyKeyPair.signature,
+        keyId: signedPreKeyRecord.getId(), // Assuming getId()
+        publicKey: signedPreKeyRecord.getKeyPair().getPublicKey().serialize(), // Assuming nested structure
+        signature: signedPreKeyRecord.getSignature(), // Assuming getSignature()
       },
-      // We only include the public part of one-time prekeys in the bundle usually.
-      // However, the setup often requires the server *storing* the private keys too,
-      // associated with their IDs, so the user can retrieve them when needed.
-      // For simplicity here, the bundle might just signal availability.
-      // The server-side logic would manage delivering one-time keys securely.
-      // Let's serialize the *public* one-time keys for the bundle structure.
-      preKeys: oneTimePreKeys.map((p) => ({
-        keyId: p.keyId,
-        publicKey: p.keyPair.pubKey,
-      })),
+      preKey: {
+        keyId: bundlePreKey.getId(), // Assuming getId()
+        publicKey: bundlePreKey.getKeyPair().getPublicKey().serialize(), // Assuming nested structure
+      },
     };
 
-    console.log("PreKey Bundle prepared (public parts).");
+    console.log("PreKey Bundle prepared (speculative API).");
 
-    // 6. Return all necessary parts (including private keys for storage)
+    // 6. Return necessary parts (adjust based on actual library objects)
+    // The actual objects returned by the library might be needed for storing locally.
     return {
-      identityKeyPair, // Includes private key
-      registrationId,
-      signedPreKeyKeyPair, // Return the whole signedPreKey object { keyId, keyPair, signature }
-      oneTimePreKeys, // Array of { keyId, keyPair } including private keys
-      preKeyBundle, // The public bundle for sharing
+      identityKeyPair, // The actual library object
+      registrationId, // The actual library object/value
+      signedPreKeyRecord, // The actual library object
+      oneTimePreKeys, // Array of actual library objects
+      preKeyBundle, // The assembled public bundle (might need adjustment)
     };
   } catch (error) {
-    console.error("Error generating Signal keys:", error);
-    throw new Error("Failed to generate Signal keys.");
+    console.error("Error generating Signal keys with new library:", error);
+    throw new Error(
+      "Failed to generate Signal keys (new library). Check console for details."
+    );
   }
 };
 
@@ -143,10 +175,15 @@ export const storePreKeyBundle = async (profileId, preKeyBundle) => {
     throw new Error("Profile ID and preKeyBundle are required.");
   }
   try {
-    console.log(`Storing pre-key bundle for profile: ${profileId}`);
+    console.log(
+      `Storing pre-key bundle for profile: ${profileId} (new library format)`
+    );
+    // IMPORTANT: Serialization needs review. The bundle contains ArrayBuffers
+    // which need Base64 encoding for JSON storage.
     const serializedBundle = JSON.stringify(preKeyBundle, (key, value) => {
-      if (value instanceof ArrayBuffer) {
-        return arrayBufferToBase64(value);
+      // This simple check might fail if library uses Uint8Array or custom Buffer types
+      if (value instanceof ArrayBuffer || value instanceof Uint8Array) {
+        return arrayBufferToBase64(value); // Assuming this helper works
       }
       return value;
     });
@@ -296,77 +333,17 @@ export const getPreKeyBundle = async (profileId) => {
  * @throws {Error} If bundle not found, session build fails, or local keys are missing.
  */
 export const establishSession = async (recipientId, deviceId = 1) => {
-  if (!recipientId) {
-    throw new Error("Recipient ID is required to establish a session.");
-  }
-
-  const address = new signal.SignalProtocolAddress(recipientId, deviceId);
-  const addressString = address.toString();
-  console.log(`[establishSession] Attempting for: ${addressString}`);
-
-  // Remove the check for existing session to ensure we always process the bundle
-  // const existingSession = await signalStore.loadSession(addressString);
-  // if (existingSession) {
-  //   console.log(`Session already exists for ${addressString}. Re-processing bundle anyway.`);
-  //   // return; // Don't return early
-  // }
-
+  // await ensureSignalInitialized();
   console.log(
-    `[establishSession] Fetching pre-key bundle for ${addressString}...`
+    `[establishSession] Attempting for: ${recipientId}.${deviceId} (new library)`
   );
-
-  // 1. Fetch Recipient's PreKey Bundle
-  const bundle = await getPreKeyBundle(recipientId);
-  if (!bundle) {
-    throw new Error(
-      `[establishSession] Could not find pre-key bundle for recipient ${recipientId}. User may not exist or hasn't generated keys.`
-    );
-  }
-  // --- Log the bundle structure ---
-  console.log(
-    `[establishSession] Pre-key bundle fetched for ${recipientId}. Structure:`,
-    JSON.stringify(serializeBuffers(bundle)) // Log serializable form
-  );
-  // --- End Log ---
-
-  // 2. Build Session (Always attempt)
-  const sessionBuilder = new signal.SessionBuilder(signalStore, address);
-
-  try {
-    console.log(
-      `[establishSession] Processing pre-key bundle with sessionBuilder for ${addressString}...`
-    );
-    // --- Log before processPreKey ---
-    const existingSessionBefore = await signalStore.loadSession(addressString);
-    console.log(
-      `[establishSession] Session state BEFORE processPreKey for ${addressString}:`,
-      existingSessionBefore
-        ? JSON.stringify(serializeBuffers(existingSessionBefore))
-        : "null"
-    );
-    // --- End Log ---
-    await sessionBuilder.processPreKey(bundle);
-    // --- Log after processPreKey ---
-    const existingSessionAfter = await signalStore.loadSession(addressString);
-    console.log(
-      `[establishSession] Session state AFTER processPreKey for ${addressString}:`,
-      existingSessionAfter
-        ? JSON.stringify(serializeBuffers(existingSessionAfter))
-        : "null"
-    );
-    // --- End Log ---
-    console.log(
-      `[establishSession] Session successfully established/updated and stored for ${addressString}.`
-    );
-  } catch (error) {
-    console.error(
-      `[establishSession] Error processing pre-key bundle for ${addressString}:`,
-      error
-    );
-    throw new Error(
-      `[establishSession] Failed to establish session with ${recipientId}: ${error.message}`
-    );
-  }
+  // TODO: Rewrite using new library API
+  // 1. Get recipient address object (e.g., signal.SignalProtocolAddress)
+  // 2. Fetch and prepare preKeyBundle (using adjusted getPreKeyBundle)
+  // 3. Instantiate SessionBuilder (e.g., signal.SessionBuilder)
+  // 4. Call processPreKeyBundle (or equivalent method)
+  // 5. Handle storage via signalStore (API might need changes in localDb.js)
+  throw new Error("establishSession not implemented for new library yet.");
 };
 
 /**
@@ -379,35 +356,16 @@ export const establishSession = async (recipientId, deviceId = 1) => {
  * @throws {Error} If session not found or encryption fails.
  */
 export const encryptMessage = async (recipientId, plaintext, deviceId = 1) => {
-  if (!recipientId || typeof plaintext !== "string") {
-    throw new Error("Recipient ID and plaintext message are required.");
-  }
-  const address = new signal.SignalProtocolAddress(recipientId, deviceId);
-  const sessionCipher = new signal.SessionCipher(signalStore, address);
-  try {
-    const plaintextBuffer = new TextEncoder().encode(plaintext).buffer;
-    console.log(
-      `Encrypting plaintext (length ${plaintextBuffer.byteLength})...`
-    );
-    const ciphertext = await sessionCipher.encrypt(plaintextBuffer);
-
-    // --- Log and Encode Body ---
-    console.log(
-      "DEBUG: Raw Ciphertext Body Type:",
-      typeof ciphertext.body,
-      ciphertext.body instanceof ArrayBuffer
-    );
-    const encodedBody = arrayBufferToBase64(ciphertext.body);
-    // --- End Log and Encode ---
-
-    return {
-      type: ciphertext.type,
-      body: encodedBody,
-    };
-  } catch (error) {
-    console.error(`Error encrypting message for ${address.toString()}:`, error);
-    throw new Error(`Encryption failed for ${recipientId}: ${error.message}`);
-  }
+  // await ensureSignalInitialized();
+  console.log(
+    `[encryptMessage] Attempting for: ${recipientId}.${deviceId} (new library)`
+  );
+  // TODO: Rewrite using new library API
+  // 1. Get recipient address object
+  // 2. Instantiate SessionCipher (e.g., signal.SessionCipher)
+  // 3. Call encrypt (input might be Uint8Array)
+  // 4. Process result (ciphertext format might differ, ensure body is Base64 encoded for return)
+  throw new Error("encryptMessage not implemented for new library yet.");
 };
 
 /**
@@ -420,128 +378,17 @@ export const encryptMessage = async (recipientId, plaintext, deviceId = 1) => {
  * @throws {Error} If session not found, decryption fails (MAC error, etc.), or type is unknown.
  */
 export const decryptMessage = async (senderId, ciphertext, deviceId = 1) => {
-  if (
-    !senderId ||
-    !ciphertext ||
-    typeof ciphertext.body !== "string" ||
-    typeof ciphertext.type !== "number"
-  ) {
-    throw new Error(
-      "[decryptMessage] Sender ID and ciphertext object {type, body} are required."
-    );
-  }
-  const address = new signal.SignalProtocolAddress(senderId, deviceId);
-  const addressString = address.toString();
+  // await ensureSignalInitialized();
   console.log(
-    `[decryptMessage] Attempting decryption for sender ${addressString}. Type: ${ciphertext.type}, Body Length (Base64): ${ciphertext.body.length}`
+    `[decryptMessage] Attempting for: ${senderId}.${deviceId} (new library)`
   );
-
-  // --- Log loaded session state ---
-  let sessionBeforeDecryption;
-  try {
-    sessionBeforeDecryption = await signalStore.loadSession(addressString);
-    console.log(
-      `[decryptMessage] Session state BEFORE decryption for ${addressString}:`,
-      sessionBeforeDecryption
-        ? JSON.stringify(serializeBuffers(sessionBeforeDecryption))
-        : "null"
-    );
-  } catch (loadErr) {
-    console.error(
-      `[decryptMessage] CRITICAL: Failed to load session state for ${addressString} before decryption:`,
-      loadErr
-    );
-    throw new Error(
-      `[decryptMessage] Cannot decrypt, failed to load session state: ${loadErr.message}`
-    );
-  }
-  // --- End Log ---
-
-  const sessionCipher = new signal.SessionCipher(signalStore, address);
-  let plaintextBuffer;
-  try {
-    // --- Decode Body ---
-    const ciphertextBodyBuffer = base64ToArrayBuffer(ciphertext.body);
-    // --- End Decode ---
-
-    if (ciphertext.type === 3) {
-      // --- Log before PreKey decrypt ---
-      console.log(
-        `[decryptMessage] Calling decryptPreKeyWhisperMessage (length ${ciphertextBodyBuffer.byteLength}) for ${addressString}...`
-      );
-      // --- End Log ---
-      plaintextBuffer = await sessionCipher.decryptPreKeyWhisperMessage(
-        ciphertextBodyBuffer
-      );
-    } else if (ciphertext.type === 1) {
-      // --- Log before Whisper decrypt ---
-      console.log(
-        `[decryptMessage] Calling decryptWhisperMessage (length ${ciphertextBodyBuffer.byteLength}) for ${addressString}...`
-      );
-      // --- End Log ---
-      plaintextBuffer = await sessionCipher.decryptWhisperMessage(
-        ciphertextBodyBuffer
-      );
-    } else {
-      throw new Error(
-        `[decryptMessage] Unknown ciphertext type: ${ciphertext.type}`
-      );
-    }
-
-    // --- Log session state AFTER successful decryption ---
-    try {
-      const sessionAfterDecryption = await signalStore.loadSession(
-        addressString
-      );
-      console.log(
-        `[decryptMessage] Session state AFTER successful decryption for ${addressString}:`,
-        sessionAfterDecryption
-          ? JSON.stringify(serializeBuffers(sessionAfterDecryption))
-          : "null"
-      );
-    } catch (loadErr) {
-      console.warn(
-        `[decryptMessage] Failed to load session state after successful decryption for ${addressString}:`,
-        loadErr
-      );
-    }
-    // --- End Log ---
-
-    // Use TextDecoder
-    const plaintext = new TextDecoder().decode(plaintextBuffer);
-    console.log(
-      `[decryptMessage] Decrypted plaintext length: ${plaintext.length}`
-    );
-    return plaintext;
-  } catch (error) {
-    // --- Log session state AFTER FAILED decryption ---
-    try {
-      const sessionAfterFailedDecryption = await signalStore.loadSession(
-        addressString
-      );
-      console.error(
-        `[decryptMessage] Session state AFTER FAILED decryption for ${addressString}:`,
-        sessionAfterFailedDecryption
-          ? JSON.stringify(serializeBuffers(sessionAfterFailedDecryption))
-          : "null"
-      );
-    } catch (loadErr) {
-      console.error(
-        `[decryptMessage] Failed to load session state after failed decryption for ${addressString}:`,
-        loadErr
-      );
-    }
-    // --- End Log ---
-    console.error(
-      `[Decrypt Error Detail] Error decrypting message from ${address.toString()}:`,
-      error
-    );
-    console.error(
-      `Error decrypting message from ${address.toString()}:`,
-      error
-    );
-    throw new Error(`Decryption failed for ${senderId}: ${error.message}`);
-  }
+  // TODO: Rewrite using new library API
+  // 1. Get sender address object
+  // 2. Instantiate SessionCipher
+  // 3. Decode Base64 body from ciphertext.body
+  // 4. Call decryptPreKeyWhisperMessage or decryptWhisperMessage based on ciphertext.type
+  // 5. Return plaintext string
+  throw new Error("decryptMessage not implemented for new library yet.");
 };
 
 // TODO: Add functions for:

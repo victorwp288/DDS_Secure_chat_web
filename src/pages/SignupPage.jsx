@@ -15,6 +15,8 @@ import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
+import { generateSignalKeys, storePreKeyBundle } from "../lib/signalUtils";
+import { signalStore } from "../lib/localDb";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -47,35 +49,104 @@ export default function SignupPage() {
     setIsLoading(true);
 
     try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email: email,
-        password: password,
-        options: {
-          // Optionally add user metadata like name here
-          // Note: Requires setting up a profile table and potentially triggers/functions
-          // for now, we just sign up with email/password
-          // data: {
-          //   full_name: name,
-          // },
-        },
-      });
+      const { data: signUpData, error: signUpError } =
+        await supabase.auth.signUp({
+          email: email,
+          password: password,
+        });
 
       if (signUpError) {
-        setError(signUpError.message);
-      } else {
-        if (
-          data.user &&
-          data.user.identities &&
-          data.user.identities.length === 0
-        ) {
-          setError("Please check your email to confirm your account.");
+        if (signUpError.message.includes("User already registered")) {
+          setError("This email is already registered. Please try logging in.");
         } else {
-          navigate("/chat");
+          setError(signUpError.message);
         }
+        setIsLoading(false);
+        return;
+      }
+
+      if (!signUpData.user) {
+        throw new Error("Signup process did not return user data.");
+      }
+
+      const newUser = signUpData.user;
+      console.log("Signup successful, user:", newUser);
+
+      console.log(`Upserting profile for user ${newUser.id}...`);
+      const { error: profileError } = await supabase.from("profiles").upsert(
+        {
+          id: newUser.id,
+          full_name: name,
+          username: email,
+        },
+        { onConflict: "id" }
+      );
+
+      if (profileError) {
+        console.error("Error upserting profile:", profileError);
+        throw new Error(
+          `Failed to create/update user profile: ${profileError.message}`
+        );
+      }
+      console.log(`Profile upserted successfully for user ${newUser.id}.`);
+
+      console.log(`Checking for existing key bundle for user ${newUser.id}...`);
+      const { data: existingKeys, error: keyCheckError } = await supabase
+        .from("encryption_keys")
+        .select("profile_id")
+        .eq("profile_id", newUser.id)
+        .maybeSingle();
+
+      if (keyCheckError) {
+        console.error("Error checking for existing keys:", keyCheckError);
+        throw new Error(
+          `Failed to check for existing encryption keys: ${keyCheckError.message}`
+        );
+      }
+
+      if (!existingKeys) {
+        console.log(
+          `No existing keys found. Generating Signal keys for user ${newUser.id}...`
+        );
+        const keys = await generateSignalKeys();
+        console.log(`Signal keys generated for user ${newUser.id}.`);
+
+        console.log(`Storing local keys for user ${newUser.id}...`);
+        await signalStore.storeIdentityKeyPair(keys.identityKeyPair);
+        await signalStore.storeLocalRegistrationId(keys.registrationId);
+        await signalStore.storeSignedPreKey(
+          keys.signedPreKeyKeyPair.keyId,
+          keys.signedPreKeyKeyPair.keyPair
+        );
+        for (const preKey of keys.oneTimePreKeys) {
+          await signalStore.storePreKey(preKey.keyId, preKey.keyPair);
+        }
+        console.log(`Local keys stored successfully for user ${newUser.id}.`);
+
+        console.log(`Storing public pre-key bundle for user ${newUser.id}...`);
+        await storePreKeyBundle(newUser.id, keys.preKeyBundle);
+        console.log(
+          `Public bundle stored successfully for user ${newUser.id}.`
+        );
+      } else {
+        console.log(
+          `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
+        );
+      }
+
+      if (newUser.identities && newUser.identities.length === 0) {
+        setError(
+          "Account created! Please check your email to confirm your account before logging in."
+        );
+      } else {
+        console.log("Navigating to chat...");
+        navigate("/chat");
       }
     } catch (err) {
-      console.error("Unexpected error during sign up:", err);
-      setError("An unexpected error occurred. Please try again.");
+      console.error("Error during sign up process:", err);
+      if (!error) {
+        setError(`Signup failed. Please try again.`);
+      }
     } finally {
       setIsLoading(false);
     }
