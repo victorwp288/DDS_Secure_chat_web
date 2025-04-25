@@ -164,36 +164,85 @@ export default function SignupPage() {
         }
         console.log(`Local keys stored successfully for user ${newUser.id}.`);
 
-        // TODO: Implement storing the PUBLIC bundle to Supabase
-        // This likely involves creating a new API endpoint or modifying the generate-keys one
-        // to accept the user ID and store the public parts.
-        console.log(
-          `TODO: Store public bundle parts (from apiResponse) for user ${newUser.id}.`
-        );
+        // --- Store Public Bundle via API ---
+        try {
+          console.log(`Preparing public bundle for user ${newUser.id}...`);
+          // Choose one pre-key to publish (e.g., the first one)
+          const preKeyToPublish = apiResponse.preKeys[0];
+          if (!preKeyToPublish) {
+            throw new Error(
+              "No pre-keys available in API response to publish."
+            );
+          }
+
+          const bundlePayload = {
+            userId: newUser.id,
+            registrationId: apiResponse.registrationId,
+            identityKey: apiResponse.identityKeyPair.publicKey, // Base64
+            signedPreKeyId: apiResponse.signedPreKey.keyId,
+            signedPreKeyPublicKey: apiResponse.signedPreKey.keyPair.publicKey, // Base64
+            signedPreKeySignature: apiResponse.signedPreKey.signature, // Base64
+            preKeyId: preKeyToPublish.keyId,
+            preKeyPublicKey: preKeyToPublish.keyPair.publicKey, // Base64
+          };
+
+          console.log(
+            `Calling /api/signal/store-bundle for user ${newUser.id}...`
+          );
+          const storeResponse = await fetch("/api/signal/store-bundle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(bundlePayload),
+          });
+
+          if (!storeResponse.ok) {
+            const errorData = await storeResponse.json();
+            console.error("API Error storing bundle:", errorData);
+            // Decide how critical this is. Maybe warn user but proceed?
+            // For now, throw error to make it explicit.
+            throw new Error(
+              `API Error storing bundle: ${
+                errorData.message || "Failed to store public bundle"
+              }`
+            );
+          }
+
+          console.log(
+            `Public bundle stored successfully via API for user ${newUser.id}.`
+          );
+        } catch (bundleError) {
+          console.error("Failed to store public pre-key bundle:", bundleError);
+          // Handle this error - maybe alert the user that setup is incomplete?
+          // Throwing it will display a generic message via the outer catch.
+          throw new Error(
+            `Failed to complete key setup: ${bundleError.message}`
+          );
+        }
+        // --- End Store Public Bundle ---
+
+        // Check if user needs email confirmation
+        if (
+          signUpData.session &&
+          signUpData.session.user.email_confirmed_at === null
+        ) {
+          setError(
+            "Account created! Please check your email to confirm your account before logging in."
+          );
+          // Optionally sign the user out until confirmed
+          // await supabase.auth.signOut();
+        } else if (signUpData.user) {
+          // User might be auto-confirmed or already confirmed
+          console.log("Navigating to chat...");
+          navigate("/chat");
+        } else {
+          // Should not happen if signup succeeded, but handle defensively
+          setError(
+            "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+          );
+        }
       } else {
         console.log(
           `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
-        );
-      }
-
-      // Check if user needs email confirmation
-      if (
-        signUpData.session &&
-        signUpData.session.user.email_confirmed_at === null
-      ) {
-        setError(
-          "Account created! Please check your email to confirm your account before logging in."
-        );
-        // Optionally sign the user out until confirmed
-        // await supabase.auth.signOut();
-      } else if (signUpData.user) {
-        // User might be auto-confirmed or already confirmed
-        console.log("Navigating to chat...");
-        navigate("/chat");
-      } else {
-        // Should not happen if signup succeeded, but handle defensively
-        setError(
-          "Signup seems complete, but login state is unclear. Please try logging in or check your email."
         );
       }
     } catch (err) {
