@@ -28,6 +28,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
+import { post } from "../lib/backend"; // <-- Import post helper
+import { db } from "../lib/db"; // <-- Import Dexie db instance
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
@@ -77,6 +79,8 @@ export default function ChatPage() {
       content: msg.content,
       timestamp: timestamp,
       isSelf: senderProfile.id === currentUser?.id,
+      isEncrypted: msg.is_encrypted, // Pass flag for potential UI indicators
+      originalCiphertextType: msg.encryption_header?.type, // Pass original type if needed
     };
   };
 
@@ -248,22 +252,78 @@ export default function ChatPage() {
     fetchConversations();
   }, [profile?.id]); // Removed selectedConversation dependency for clarity
 
-  // 3. Fetch messages when selectedConversation changes
+  // 3. Fetch messages when selectedConversation changes - UPDATED FOR INDEXEDDB + Rehydration
   useEffect(() => {
     if (!selectedConversation?.id || !currentUser?.id) {
       setMessages([]); // Clear messages if no conversation selected
       return;
     }
 
-    const fetchMessages = async () => {
-      setLoadingMessages(true);
-      setError(null); // Clear previous errors
+    let isMounted = true; // Flag to prevent state updates on unmounted component
+    setLoadingMessages(true);
+    setError(null);
+    console.log(
+      `[Effect 3 - Combined] Loading messages for convo ${selectedConversation.id}`
+    );
+
+    // Helper to format messages loaded from IndexedDB
+    const formatLocalMessage = (localMsg) => ({
+      id: localMsg.id,
+      senderId: localMsg.senderId,
+      senderName: localMsg.senderName,
+      senderAvatar: localMsg.senderAvatar,
+      content: localMsg.content, // Content is already plaintext
+      timestamp: new Date(localMsg.timestamp).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }), // Format timestamp for display
+      isSelf: localMsg.senderId === currentUser.id, // Re-calculate isSelf based on current user
+    });
+
+    const loadAndRehydrateMessages = async () => {
       try {
-        const { data, error: messagesError } = await supabase
+        // --- Step 1: Load existing messages from IndexedDB ---
+        let localMessages = await db.messages
+          .where("conversationId")
+          .equals(selectedConversation.id)
+          .toArray();
+
+        // Purge any that are empty *or* the initial-session placeholder
+        localMessages = await Promise.all(
+          localMessages.map(async (m) => {
+            const shouldPurge =
+              !m.content.trim() || m.content === "(initial session packet)";
+            if (shouldPurge) {
+              await db.messages.delete(m.id);
+              console.log(`Purged message ${m.id} from IndexedDB`);
+              return null;
+            }
+            return m;
+          })
+        ).then((arr) => arr.filter(Boolean));
+
+        // Sort by timestamp
+        localMessages.sort(
+          (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+        );
+
+        if (!isMounted) return;
+
+        console.log(
+          `[Effect 3 - DB] Using ${localMessages.length} clean messages locally.`
+        );
+        setMessages(localMessages.map(formatLocalMessage));
+
+        // --- Step 2: Fetch ALL messages from Supabase to find missing ones ---
+        console.log(
+          `[Effect 3 - Supa] Fetching all messages from Supabase for potential rehydration.`
+        );
+        const { data: supabaseMessages, error: messagesError } = await supabase
           .from("messages")
           .select(
             `
             id,
+            conversation_id,
             content,
             created_at,
             profile_id,
@@ -276,46 +336,104 @@ export default function ChatPage() {
           .order("created_at", { ascending: true });
 
         if (messagesError) throw messagesError;
+        if (!isMounted) return;
 
-        // Decrypt messages before formatting
-        const decryptedMessages = await Promise.all(
-          data.map(async (msg) => {
-            if (msg.is_encrypted) {
-              console.log(
-                `[FetchMessages] Message ${msg.id} is encrypted. Decryption needed.`
-              );
-              // TODO: Implement call to /api/signal/decrypt
-              // For now, show placeholder
-              try {
-                const header = JSON.parse(msg.encryption_header || "{}");
-                return {
-                  ...msg,
-                  content: `🔒 Encrypted (Type ${
-                    header.type
-                  }) - [${msg.content.substring(0, 10)}...]`,
-                };
-              } catch {
-                return { ...msg, content: "🔒 Encrypted [Invalid Header]" };
-              }
-            } else {
-              // If not encrypted, return as is
-              return msg;
-            }
-          })
+        console.log(
+          `[Effect 3 - Supa] Fetched ${supabaseMessages.length} raw messages from Supabase.`
         );
 
-        const formatted = decryptedMessages.map(formatMessage).filter(Boolean); // Format potentially decrypted messages
-        setMessages(formatted);
+        // --- Step 3: Identify and decrypt messages NOT already in IndexedDB ---
+        const localIds = new Set(localMessages.map((m) => m.id));
+        const messagesToProcess = supabaseMessages.filter(
+          (supaMsg) =>
+            supaMsg.profile_id !== currentUser.id && // from someone else
+            !localIds.has(supaMsg.id) // not already stored
+        );
+
+        console.log(
+          `[Effect 3 - Decrypt] Found ${messagesToProcess.length} missing/undecrypted messages.`
+        );
+
+        if (messagesToProcess.length === 0) {
+          console.log("No messages to process.");
+          return;
+        }
+
+        if (messagesToProcess.length > 0) {
+          for (const msg of messagesToProcess) {
+            let plaintext = msg.content;
+
+            // *only* decrypt if it's still marked encrypted
+            if (msg.is_encrypted) {
+              try {
+                const { plaintext: p } = await post("/api/messages/decrypt", {
+                  recipient_id: currentUser.id,
+                  sender_id: msg.profile_id,
+                  header_b64: msg.encryption_header,
+                  ciphertext_b64: msg.content,
+                });
+                plaintext = p;
+              } catch (err) {
+                console.warn(`Failed to decrypt ${msg.id}, skipping:`, err);
+                continue; // or set plaintext = "[decryption error]" if you prefer
+              }
+            }
+            if (!plaintext.trim()) {
+              console.log(`Skipping empty/handshake message ${msg.id}`);
+              continue;
+            }
+            const toStore = {
+              id: msg.id,
+              conversationId: msg.conversation_id,
+              senderId: msg.profile_id,
+              senderName:
+                msg.profiles?.full_name || msg.profiles?.username || "Unknown",
+              senderAvatar: msg.profiles?.avatar_url,
+              content: plaintext,
+              timestamp: new Date(msg.created_at).toISOString(),
+            };
+
+            await db.messages.put(toStore);
+
+            if (!isMounted) break;
+
+            setMessages((prev) => {
+              const formatted = {
+                id: toStore.id,
+                senderId: toStore.senderId,
+                senderName: toStore.senderName,
+                senderAvatar: toStore.senderAvatar,
+                content: toStore.content,
+                timestamp: new Date(toStore.timestamp).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }),
+                isSelf: toStore.senderId === currentUser.id,
+              };
+              return [...prev, formatted].sort(
+                (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+              );
+            });
+          }
+        }
       } catch (err) {
-        console.error("Error fetching messages:", err);
-        setError("Failed to load messages.");
-        setMessages([]); // Clear messages on error
+        console.error("[Effect 3] Error loading messages:", err);
+        if (isMounted) setError("Failed to load messages.");
       } finally {
-        setLoadingMessages(false);
+        if (isMounted) {
+          setLoadingMessages(false);
+          console.log("[Effect 3] Finished loading messages.");
+        }
       }
     };
 
-    fetchMessages();
+    loadAndRehydrateMessages();
+
+    // Cleanup function
+    return () => {
+      isMounted = false;
+      console.log("[Effect 3 - Combined] Unmounting/cleanup.");
+    };
 
     // Dependency array: Fetch when conversation or user changes
   }, [selectedConversation?.id, currentUser?.id]);
@@ -336,79 +454,6 @@ export default function ChatPage() {
       return;
     }
 
-    // Define the message handler
-    const handleNewMessage = async (payload) => {
-      console.log("[Realtime] handleNewMessage triggered:", payload);
-
-      const newMessageData = payload.new;
-
-      // Check if it belongs to the current conversation (extra safety)
-      if (newMessageData.conversation_id !== selectedConversation.id) {
-        console.log(
-          "[Realtime] Message is for a different conversation, skipping."
-        );
-        return;
-      }
-
-      // Avoid adding duplicates if message already exists (e.g., from initial fetch)
-      if (messages.some((msg) => msg.id === newMessageData.id)) {
-        console.log("[Realtime] Duplicate message detected, skipping.");
-        return;
-      }
-
-      // Fetch sender profile for the new message
-      const { data: senderProfile, error: profileError } = await supabase
-        .from("profiles")
-        .select("id, full_name, username, avatar_url")
-        .eq("id", newMessageData.profile_id)
-        .single();
-
-      if (profileError) {
-        console.error(
-          "[Realtime] Error fetching profile for new message:",
-          profileError
-        );
-        return;
-      }
-
-      console.log("[Realtime] Fetched sender profile:", senderProfile);
-
-      let contentToFormat = { ...newMessageData, profiles: senderProfile };
-
-      // Check if message is encrypted and attempt decryption
-      if (newMessageData.is_encrypted) {
-        console.log(
-          `[Realtime] Message ${newMessageData.id} is encrypted. Decryption needed.`
-        );
-        // TODO: Implement call to /api/signal/decrypt for realtime messages
-        // Show placeholder for now
-        try {
-          const header = JSON.parse(newMessageData.encryption_header || "{}");
-          contentToFormat.content = `🔒 Encrypted (Type ${
-            header.type
-          }) - [${newMessageData.content.substring(0, 10)}...]`;
-        } catch {
-          contentToFormat.content = "🔒 Encrypted [Invalid Header]";
-        }
-      } else {
-        console.log(
-          `[Realtime] Message ${newMessageData.id} is not encrypted.`
-        );
-      }
-
-      // Format the message for the UI (using potentially decrypted content)
-      const formatted = formatMessage(contentToFormat);
-      if (formatted) {
-        console.log("[Realtime] Adding formatted message to state:", formatted);
-        setMessages((prevMessages) => [...prevMessages, formatted]);
-      } else {
-        console.warn(
-          "[Realtime] Failed to format message payload:",
-          payload.new
-        );
-      }
-    };
-
     // Create a new channel for the selected conversation
     const channel = supabase
       .channel(`messages:${selectedConversation.id}`)
@@ -420,7 +465,141 @@ export default function ChatPage() {
           table: "messages",
           filter: `conversation_id=eq.${selectedConversation.id}`, // Filter for current conversation
         },
-        handleNewMessage
+        // Modified handler to include decryption
+        async (payload) => {
+          console.log("[Realtime] handleNewMessage triggered:", payload);
+
+          const newMessageData = payload.new;
+
+          // --- BEGIN FIX: Ignore own messages from realtime insert ---
+          if (newMessageData.profile_id === currentUser.id) {
+            console.log(
+              "[Realtime] Ignoring own message insert notification (already handled by local echo)."
+            );
+            return;
+          }
+          // --- END FIX ---
+
+          // Check if it belongs to the current conversation (extra safety)
+          if (newMessageData.conversation_id !== selectedConversation.id) {
+            console.log(
+              "[Realtime] Message is for a different conversation, skipping."
+            );
+            return;
+          }
+
+          // Avoid adding duplicates if message already exists (e.g., from initial fetch)
+          if (messages.some((msg) => msg.id === newMessageData.id)) {
+            console.log("[Realtime] Duplicate message detected, skipping.");
+            return;
+          }
+
+          // Fetch sender profile for the new message
+          const { data: senderProfile, error: profileError } = await supabase
+            .from("profiles")
+            .select("id, full_name, username, avatar_url")
+            .eq("id", newMessageData.profile_id)
+            .single();
+
+          if (profileError) {
+            console.error(
+              "[Realtime] Error fetching profile for new message:",
+              profileError
+            );
+            return;
+          }
+          console.log("[Realtime] Fetched sender profile:", senderProfile);
+
+          let contentToFormat = { ...newMessageData, profiles: senderProfile };
+
+          // Check if message is encrypted and needs decryption
+          if (
+            newMessageData.is_encrypted &&
+            newMessageData.profile_id !== currentUser.id
+            // Removed check for content/header here, rely on is_encrypted
+          ) {
+            console.log(
+              `[Realtime] Encrypted message ${newMessageData.id} received, needs decryption.`
+            );
+            try {
+              console.log(
+                `[Realtime] Calling backend decrypt for msg ${newMessageData.id}...`
+              );
+              // Use post helper for decryption
+              const decryptResult = await post("/api/messages/decrypt", {
+                recipient_id: currentUser.id,
+                sender_id: newMessageData.profile_id,
+                header_b64: newMessageData.encryption_header,
+                ciphertext_b64: newMessageData.content,
+              });
+
+              // Only need plaintext now, already_decrypted check happens via !localIds.has()
+              const { plaintext } = decryptResult;
+
+              console.log(
+                `[Realtime] Decryption successful for msg ${newMessageData.id}.`
+              );
+
+              // Update contentToFormat with decrypted data
+              contentToFormat.content = plaintext;
+              contentToFormat.is_encrypted = false; // Mark as plaintext for formatting
+              contentToFormat.encryption_header = null; // Conceptually nullify header
+            } catch (decryptionError) {
+              console.error(
+                `[Realtime] Error during decryption call for msg ${newMessageData.id}:`,
+                decryptionError
+              );
+              contentToFormat.content = "[Decryption Error]"; // Update content to show error
+              contentToFormat.is_encrypted = true; // Keep flag true as decryption failed
+            }
+          } else {
+            // Message is plaintext or self-sent
+            console.log(
+              `[Realtime] Message ${newMessageData.id} is plaintext or self-sent.`
+            );
+            // Ensure contentToFormat reflects this if necessary (it should already have the correct content/flags from payload)
+          }
+
+          // *** NEW: skip both empty and handshake packets ***
+          if (
+            !contentToFormat.content.trim() ||
+            contentToFormat.content === "(initial session packet)"
+          ) {
+            console.log(
+              `Skipping realtime handshake/empty msg ${newMessageData.id}`
+            );
+            return;
+          }
+
+          // Format the message for the UI (using potentially decrypted content)
+          const formatted = formatMessage(contentToFormat);
+          if (formatted) {
+            const toStore = {
+              id: contentToFormat.id,
+              conversationId: contentToFormat.conversation_id,
+              senderId: contentToFormat.profile_id,
+              senderName: senderProfile.full_name || senderProfile.username,
+              senderAvatar: senderProfile.avatar_url,
+              content: contentToFormat.content,
+              timestamp: new Date(payload.new.created_at).toISOString(),
+            };
+            try {
+              await db.messages.put(toStore);
+            } catch (err) {
+              console.error("Failed to persist incoming msg:", err);
+            }
+            console.log(
+              "[Realtime] Adding formatted message to state:",
+              formatted
+            );
+            setMessages((prevMessages) => [...prevMessages, formatted]);
+          } else {
+            console.warn(
+              "[Realtime] Failed to format message payload:",
+              payload.new
+            );
+          }
+        }
       )
       .subscribe((status, err) => {
         if (status === "SUBSCRIBED") {
@@ -457,9 +636,8 @@ export default function ChatPage() {
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedConversation || !profile?.id) return;
 
-    // Correctly find the recipient's profile object from the participants array
     const recipientProfile = selectedConversation.participants.find(
-      (p) => p.id !== profile.id // Compare participant's id with the current user's profile id
+      (p) => p.id !== profile.id
     );
 
     if (!recipientProfile) {
@@ -471,103 +649,140 @@ export default function ChatPage() {
     }
 
     const recipientId = recipientProfile.id;
-    // REMOVED: We don't need Signal address objects in frontend anymore
-    // const recipientAddress = new SignalProtocolAddress(
-    //   recipientId,
-    //   1
-    // );
-    // const senderAddress = new SignalProtocolAddress(profile.id, 1);
-
-    console.log(
-      `[SendMessage] Attempting to send: "${newMessage}" to recipient ${recipientId} in convo ${selectedConversation.id}`
-    );
+    const plaintextMessage = newMessage.trim();
+    setNewMessage(""); // Clear input immediately
+    console.log(`[SendMessage] Preparing to encrypt: "${plaintextMessage}"`);
 
     try {
-      setLoadingMessages(true); // Indicate activity
-      const plaintextMessage = newMessage.trim();
-      setNewMessage(""); // Clear input immediately
-
-      // --- Call Backend Encryption API ---
+      // --- Step 0: Ensure Session is Initiated ---
       console.log(
-        `[SendMessage] Calling /api/signal/encrypt for recipient ${recipientId}...`
+        `[SendMessage] Ensuring session initiated for ${profile.id} -> ${recipientId}...`
       );
-      const encryptResponse = await fetch("/api/signal/encrypt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // TEMPORARY: Sending senderId in body. TODO: Use Auth header instead.
-        body: JSON.stringify({
-          senderId: profile.id,
-          recipientId: recipientId,
-          plaintext: plaintextMessage,
-        }),
+      // Use post helper to initiate session
+      const initiateResult = await post("/api/sessions/initiate", {
+        sender_id: profile.id,
+        recipient_id: recipientId,
       });
 
-      if (!encryptResponse.ok) {
-        let errorData = {
-          message:
-            "Encryption API failed with status: " + encryptResponse.status,
-        };
-        try {
-          errorData = await encryptResponse.json(); // Try to parse JSON error
-        } catch {
-          console.warn(
-            "[SendMessage] Failed to parse JSON error from encrypt API."
-          );
+      console.log(
+        "[SendMessage] Session initiation check completed:",
+        initiateResult.message // Use message from post result
+      );
+      // Step 0b: If there's an initial handshake packet, store it
+      if (initiateResult.initial_packet_header_b64) {
+        console.log("[SendMessage] Storing handshake packet…");
+        const { error: hsError } = await supabase.from("messages").insert({
+          conversation_id: selectedConversation.id,
+          profile_id: profile.id,
+          content: initiateResult.initial_packet_ciphertext_b64,
+          is_encrypted: true,
+          encryption_header: initiateResult.initial_packet_header_b64,
+        });
+        if (hsError) {
+          console.error("Failed to store handshake packet:", hsError);
+          throw new Error("Handshake storage failed");
         }
-        console.error("[SendMessage] API Error encrypting message:", errorData);
+        console.log("[SendMessage] Handshake packet stored.");
+      }
+      // --- Step 1: Call Backend Encryption API ---
+      console.log(
+        `[SendMessage] Calling backend encrypt for recipient ${recipientId}...`
+      );
+      // Use post helper to encrypt
+      const { header_b64, ciphertext_b64 } = await post(
+        "/api/messages/encrypt",
+        {
+          sender_id: profile.id,
+          recipient_id: recipientId,
+          plaintext: plaintextMessage,
+        }
+      );
+
+      console.log(
+        `[SendMessage] Encryption successful. Header and Ciphertext received.`
+      );
+
+      // --- Step 2: Store Encrypted Message in Supabase ---
+      console.log(`[SendMessage] Storing encrypted message to Supabase...`);
+      const { data: insertedMessages, error: insertError } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: selectedConversation.id,
+          profile_id: profile.id,
+          content: ciphertext_b64,
+          is_encrypted: true,
+          encryption_header: header_b64,
+        })
+        .select("id") // Select the ID of the inserted row
+        .single(); // Expecting a single row back
+
+      if (insertError) {
+        console.error(
+          "[SendMessage] Error inserting message into Supabase:",
+          insertError
+        );
         throw new Error(
-          `API Error: ${errorData.message || "Failed to encrypt message"}`
+          `Database Error: ${insertError.message || "Failed to save message"}`
         );
       }
 
-      const { type, body: ciphertextBase64 } = await encryptResponse.json(); // Expects { type: number, body: string (base64) }
-      console.log(
-        `[SendMessage] Encryption successful via API. Type: ${type}, Ciphertext: ${ciphertextBase64.substring(
-          0,
-          20
-        )}...`
-      );
-      // --- END Backend API Call ---
+      console.log("[SendMessage] Message stored successfully in Supabase.");
 
-      // --- TODO: Send to actual message storage API ---
-      console.log(
-        `[SendMessage] TODO: Send this ciphertext to /api/messages/send`
-      );
-      const messagePayload = {
-        conversation_id: selectedConversation.id,
-        sender_id: profile.id,
-        recipient_id: recipientId, // Good to include for backend routing/checks
-        ciphertext: ciphertextBase64,
-        type: type, // Send type (1 or 3)
-      };
-      console.log(
-        "[SendMessage] Placeholder payload for next step:",
-        messagePayload
-      );
-
-      // Simulate adding the *plaintext* locally until backend is ready
-      // This will be replaced by the subscription update later
-      const tempFormattedMsg = formatMessage({
-        id: Date.now(), // temp ID
-        profiles: profile,
-        content: plaintextMessage, // Show plaintext for now
-        created_at: new Date().toISOString(),
-        conversation_id: selectedConversation.id,
-        sender_id: profile.id, // Use actual sender ID
-      });
-      if (tempFormattedMsg) {
-        setMessages((prev) => [...prev, tempFormattedMsg]);
+      // --- Step 3: Store Plaintext Locally in IndexedDB ---
+      if (!insertedMessages?.id) {
+        console.error(
+          "[SendMessage] Failed to get ID of inserted message from Supabase. Cannot store locally."
+        );
+      } else {
+        const messageId = insertedMessages.id;
+        const messageForDb = {
+          id: messageId, // Use the REAL ID from Supabase
+          conversationId: selectedConversation.id,
+          senderId: profile.id,
+          senderName: profile.full_name || profile.username,
+          senderAvatar: profile.avatar_url,
+          content: plaintextMessage, // Store PLAINTEXT
+          timestamp: new Date().toISOString(), // Store ISO string for consistent sorting
+        };
+        try {
+          await db.messages.put(messageForDb);
+          console.log(
+            `[SendMessage] Stored outgoing plaintext message locally with ID: ${messageId}`
+          );
+        } catch (dbError) {
+          console.error(
+            "[SendMessage] Error storing outgoing message locally in IndexedDB:",
+            dbError
+          );
+          // Consider how to handle this failure - the message IS sent.
+        }
       }
+
+      // --- Step 4: Optimistic UI Update ---
+      // Keep this for immediate feedback. Reloads will use the data stored in DB.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(), // Use a temporary ID for the optimistic UI update
+          senderId: profile.id,
+          senderName: profile.full_name || profile.username,
+          senderAvatar: profile.avatar_url,
+          content: plaintextMessage, // <-- clear-text
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          isSelf: true,
+          isEncrypted: false, // UI shows plaintext
+        },
+      ]);
     } catch (err) {
-      console.error(
-        "[SendMessage] Error during message encryption/sending process:",
-        err
-      );
+      console.error("[SendMessage] Error during message sending process:", err);
       setError(`Error sending message: ${err.message}`);
-      // Optionally, restore the input field content if sending fails
-      // setNewMessage(newMessage); // Be careful not to re-trigger send on state change
+      // Restore the input field content if sending fails?
+      setNewMessage(plaintextMessage); // Put message back on error
     } finally {
-      setLoadingMessages(false);
+      // setLoadingMessages(false); // Maybe not needed here as insert is quick?
     }
   };
 

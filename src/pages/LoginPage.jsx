@@ -13,8 +13,10 @@ import {
 } from "@/components/ui/card";
 import { AlertCircle, ArrowLeft, Lock } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+// eslint-disable-next-line
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
+import { ensureKeys } from "../lib/backend";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -43,7 +45,30 @@ export default function LoginPage() {
       if (signInError) {
         setError(signInError.message);
       } else {
-        navigate("/chat");
+        // Ensure keys exist before navigating
+        try {
+          const { data: sessionData, error: sessionError } =
+            await supabase.auth.getSession();
+          if (sessionError) throw sessionError;
+          if (!sessionData?.session?.user?.id)
+            throw new Error("User ID not found in session after login.");
+          await ensureKeys(sessionData.session.user.id);
+          console.log(
+            "✅ Login: Keys ensured for",
+            sessionData.session.user.id
+          );
+          navigate("/chat");
+        } catch (keyError) {
+          console.error("Error ensuring keys on login:", keyError);
+          const errorMessage =
+            keyError && typeof keyError === "object" && keyError.message
+              ? keyError.message
+              : "An unknown error occurred checking keys.";
+          setError(
+            `Login successful, but failed to ensure encryption keys: ${errorMessage}. Please try refreshing or contacting support.`
+          );
+          // Keep user on login page if key check fails catastrophically
+        }
       }
     } catch (err) {
       console.error("Unexpected error during login:", err);
