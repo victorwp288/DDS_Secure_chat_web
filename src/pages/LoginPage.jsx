@@ -11,7 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AlertCircle, ArrowLeft, Lock } from "lucide-react";
+import { AlertCircle, ArrowLeft, ArrowRight, Lock } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
@@ -62,6 +62,13 @@ export default function LoginPage() {
         >
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Home
+        </Link>
+        <Link
+          to="/crypto-test"
+          className="inline-flex items-center text-slate-300 hover:text-white"
+        >
+          <ArrowRight className="h-4 w-4 mr-2" />
+          To Crypto Test
         </Link>
       </header>
 
