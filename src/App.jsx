@@ -7,12 +7,14 @@ import ProfilePage from './pages/ProfilePage'; // Import the ProfilePage
 import LoginPage from './pages/LoginPage'; // Import the LoginPage
 import ForgotPasswordPage from './pages/ForgotPasswordPage'; // Import the ForgotPasswordPage
 import ChatPage from './pages/ChatPage'; // Import the ChatPage
+import CryptoTestPage from './pages/CryptoTestPage'; // Import the CryptoTestPage
 
 function App() {
   return (
     <Router> {/* Wrap everything in the Router */}
       <Routes> {/* Define routes */}
         <Route path="/" element={<HomePage />} /> 
+        <Route path="/crypto-test" element={<CryptoTestPage />} /> 
         <Route path="/signup" element={<SignupPage />} /> 
         <Route path="/settings" element={<SettingsPage />} /> 
         <Route path="/profile" element={<ProfilePage />} /> 
