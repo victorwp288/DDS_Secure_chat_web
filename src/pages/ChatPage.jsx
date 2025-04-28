@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import EmojiPicker from 'emoji-picker-react';
 import {
   ArrowLeft,
   LogOut,
@@ -39,6 +40,7 @@ export default function ChatPage() {
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(true);
@@ -914,7 +916,7 @@ export default function ChatPage() {
         </ScrollArea>
 
         {/* Message Input */}
-        <div className="p-4 border-t border-slate-700 bg-slate-800">
+        <div className="p-4 border-t border-slate-700 bg-slate-800 relative">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -936,6 +938,14 @@ export default function ChatPage() {
               disabled={!selectedConversation || loadingConversations}
             />
             <Button
+             type="button"
+             variant="ghost"
+             size="icon"
+             onClick={() => setShowEmojiPicker((prev) => !prev)}
+            >
+            😀
+          </Button>
+            <Button
               type="submit"
               size="icon"
               className="bg-emerald-500 hover:bg-emerald-600 text-white"
@@ -948,6 +958,15 @@ export default function ChatPage() {
               <Send className="h-5 w-5" />
             </Button>
           </form>
+          {showEmojiPicker && (
+  <div className="absolute bottom-24 right-8 z-50">
+    <EmojiPicker
+      onEmojiClick={(emojiData) => {
+        setNewMessage((prev) => prev + emojiData.emoji);
+      }}
+    />
+  </div>
+)}
         </div>
       </div>
     </div>
