@@ -20,23 +20,20 @@ const About = () => {
       <div className="max-w-4xl mx-auto bg-gradient-to-b p-8 rounded-lg shadow-md">
         <h1 className="text-3xl font-bold text-center text-white mb-6">About the project</h1>
         <p className="text-white mb-8">
-          Welcome to our About page! Here you can learn more about our company, our mission, and our team.
           Welcome to our About page! Here you can learn more about our project.
         </p>
 
         <section className="mb-8">
-          <h2 className="text-2xl font-semibold text-white mb-4">Our Mission</h2>
           <h2 className="text-2xl font-semibold text-white mb-4">Our project</h2>
           <p className="text-white">
-            Our mission is to provide high-quality services and products to our customers. We strive to exceed expectations and deliver exceptional value.
-            The project is based on end to end message encryption. It is a web application that allows users to send and receive encrypted messages securely.
-            The application uses the double ratchet algorithm to ensure that messages are encrypted and decrypted securely. 
+          Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integer ut posuere orci. Vestibulum bibendum dolor tortor, eu pharetra eros pharetra ac. Vestibulum semper justo felis, sit amet aliquet magna aliquam at. Ut sollicitudin risus vitae maximus tristique. Fusce a malesuada mauris. Suspendisse tempor cursus ligula, a viverra nulla rutrum quis. Fusce hendrerit metus nunc, vel mattis libero sodales id. Nunc commodo volutpat est, nec fermentum felis dictum non. Praesent varius gravida ante non consectetur. Curabitur sit amet consectetur lorem. Nam pharetra urna in urna dignissim, ut lobortis ex ullamcorper. Fusce elementum sollicitudin tortor gravida rutrum. Nam tellus ipsum, posuere in placerat in, cursus nec augue.
+
+Vivamus eget dui at lacus egestas posuere. Donec mattis faucibus congue. Suspendisse laoreet pretium massa a placerat. Quisque tincidunt felis eu lacus viverra, eu molestie libero lacinia. Aliquam viverra mauris cursus massa lobortis, sagittis varius mauris porttitor. Nunc lobortis lobortis lorem id dignissim. Aenean nec odio sed mi viverra auctor. Suspendisse pellentesque pellentesque massa nec porttitor. Integer dapibus velit at velit consectetur vehicula. 
           </p>
         </section>
         
 
        <section className="mb-8">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-4">Meet the Team</h2>
           <h2 className="text-2xl font-semibold text-white mb-4">The group:</h2>
           <div className="space-y-4">
 
@@ -49,14 +46,10 @@ const About = () => {
             </div>
 
             <div className="team-member">
-              <h3 className="text-xl font-semibold text-gray-800">John Doe</h3>
-              <p className="text-gray-600">CEO & Founder</p>
               <h3 className="text-xl font-semibold text-white">Neha Sharma</h3>
             </div>
 
             <div className="team-member">
-              <h3 className="text-xl font-semibold text-gray-800">Jane Smith</h3>
-              <p className="text-gray-600">CTO</p>
               <h3 className="text-xl font-semibold text-white">Ivan Mezinov</h3>
               </div>
 
@@ -65,8 +58,6 @@ const About = () => {
             </div>
 
             <div className="team-member">
-              <h3 className="text-xl font-semibold text-gray-800">Emily Johnson</h3>
-              <p className="text-gray-600">Marketing Director</p>
               <h3 className="text-xl font-semibold text-white">Morten Allan Jensen</h3>
             </div>
 
@@ -74,9 +65,6 @@ const About = () => {
           </div>
         </section>
 
-        @todo: Add more sections as needed
-        @todo add back button 
-        @todo Write about the project and members
         </div>
         </div>
       </div>
