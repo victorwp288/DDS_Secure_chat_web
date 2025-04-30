@@ -13,8 +13,8 @@ import {
 } from "@/components/ui/card";
 import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
+import { ensureKeys } from "../lib/backend";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -47,35 +47,81 @@ export default function SignupPage() {
     setIsLoading(true);
 
     try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email: email,
-        password: password,
-        options: {
-          // Optionally add user metadata like name here
-          // Note: Requires setting up a profile table and potentially triggers/functions
-          // for now, we just sign up with email/password
-          // data: {
-          //   full_name: name,
-          // },
-        },
-      });
+      const { data: signUpData, error: signUpError } =
+        await supabase.auth.signUp({
+          email: email,
+          password: password,
+        });
 
       if (signUpError) {
-        setError(signUpError.message);
-      } else {
-        if (
-          data.user &&
-          data.user.identities &&
-          data.user.identities.length === 0
-        ) {
-          setError("Please check your email to confirm your account.");
+        if (signUpError.message.includes("User already registered")) {
+          setError("This email is already registered. Please try logging in.");
         } else {
-          navigate("/chat");
+          setError(signUpError.message);
         }
+        setIsLoading(false);
+        return;
+      }
+
+      if (!signUpData.user) {
+        throw new Error("Signup process did not return user data.");
+      }
+
+      const newUser = signUpData.user;
+      console.log("Signup successful, user:", newUser);
+
+      console.log(`Upserting profile for user ${newUser.id}...`);
+      const { error: profileError } = await supabase.from("profiles").upsert(
+        {
+          id: newUser.id,
+          full_name: name,
+          username: email,
+        },
+        { onConflict: "id" }
+      );
+
+      if (profileError) {
+        console.error("Error upserting profile:", profileError);
+        throw new Error(
+          `Failed to create/update user profile: ${profileError.message}`
+        );
+      }
+      console.log(`Profile upserted successfully for user ${newUser.id}.`);
+
+      try {
+        await ensureKeys(newUser.id);
+        console.log("✅ keys exist for", newUser.id);
+      } catch (e) {
+        console.error("Error ensuring keys exist:", e);
+        const errorMessage =
+          e && typeof e === "object" && e.message
+            ? e.message
+            : "An unknown error occurred during key generation.";
+        setError("Could not create encryption keys: " + errorMessage);
+        setIsLoading(false);
+        return;
+      }
+
+      if (
+        signUpData.session &&
+        signUpData.session.user.email_confirmed_at === null
+      ) {
+        setError(
+          "Account created! Please check your email to confirm your account before logging in."
+        );
+      } else if (signUpData.user) {
+        console.log("Navigating to chat...");
+        navigate("/chat");
+      } else {
+        setError(
+          "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+        );
       }
     } catch (err) {
-      console.error("Unexpected error during sign up:", err);
-      setError("An unexpected error occurred. Please try again.");
+      console.error("Error during sign up process:", err);
+      if (!error) {
+        setError(`Signup failed: ${err.message || "Please try again."}`);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -94,25 +140,15 @@ export default function SignupPage() {
       </header>
 
       <main className="flex-1 flex items-center justify-center p-4">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="w-full max-w-md"
-        >
+        <div className="w-full max-w-md">
           <Card className="border-slate-700 bg-slate-800/50 backdrop-blur-sm">
             <CardHeader className="space-y-1">
               <div className="flex justify-center mb-2">
                 <div className="relative">
                   <Lock className="h-8 w-8 text-emerald-400" />
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ delay: 0.3, duration: 0.5 }}
-                    className="absolute -top-1 -right-1 bg-emerald-400 rounded-full p-1"
-                  >
+                  <div className="absolute -top-1 -right-1 bg-emerald-400 rounded-full p-1">
                     <Shield className="h-3 w-3 text-slate-900" />
-                  </motion.div>
+                  </div>
                 </div>
               </div>
               <CardTitle className="text-2xl text-center text-white">
@@ -215,7 +251,7 @@ export default function SignupPage() {
             </CardContent>
             <CardFooter className="flex justify-center">
               <p className="text-sm text-slate-400">
-                Already have an account?
+                Already have an account?{" "}
                 <Link
                   to="/login"
                   className="text-emerald-400 hover:text-emerald-300"
@@ -225,7 +261,7 @@ export default function SignupPage() {
               </p>
             </CardFooter>
           </Card>
-        </motion.div>
+        </div>
       </main>
     </div>
   );

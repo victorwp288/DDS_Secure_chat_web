@@ -11,14 +11,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AlertCircle, ArrowLeft, Lock } from "lucide-react";
+import { AlertCircle, ArrowLeft, Lock, Eye, EyeOff } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+// eslint-disable-next-line
 import { motion } from "framer-motion";
 import { supabase } from "../lib/supabaseClient";
+import { ensureKeys } from "../lib/backend";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
@@ -43,7 +46,30 @@ export default function LoginPage() {
       if (signInError) {
         setError(signInError.message);
       } else {
-        navigate("/chat");
+        // Ensure keys exist before navigating
+        try {
+          const { data: sessionData, error: sessionError } =
+            await supabase.auth.getSession();
+          if (sessionError) throw sessionError;
+          if (!sessionData?.session?.user?.id)
+            throw new Error("User ID not found in session after login.");
+          await ensureKeys(sessionData.session.user.id);
+          console.log(
+            "✅ Login: Keys ensured for",
+            sessionData.session.user.id
+          );
+          navigate("/chat");
+        } catch (keyError) {
+          console.error("Error ensuring keys on login:", keyError);
+          const errorMessage =
+            keyError && typeof keyError === "object" && keyError.message
+              ? keyError.message
+              : "An unknown error occurred checking keys.";
+          setError(
+            `Login successful, but failed to ensure encryption keys: ${errorMessage}. Please try refreshing or contacting support.`
+          );
+          // Keep user on login page if key check fails catastrophically
+        }
       }
     } catch (err) {
       console.error("Unexpected error during login:", err);
@@ -52,6 +78,11 @@ export default function LoginPage() {
       setIsLoading(false);
     }
   };
+
+    //show password
+    const handleState = () => {
+      setShowPassword((showState) => !showState)
+    }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col">
@@ -122,13 +153,23 @@ export default function LoginPage() {
                       Forgot password?
                     </Link>
                   </div>
+
+                <div className="relative"> 
                   <Input
                     id="password"
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="bg-slate-900/50 border-slate-700 text-slate-200"
                   />
+                  <button
+                  type="button"
+                  onClick={handleState}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  >
+                    {showPassword ? <Eye size={20} /> : <EyeOff size={20} />}
+                  </button>
+                  </div> 
                 </div>
 
                 <Button
