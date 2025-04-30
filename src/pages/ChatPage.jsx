@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import EmojiPicker from 'emoji-picker-react';
 import {
   ArrowLeft,
   LogOut,
@@ -28,6 +29,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
+// import { encryptMessage } from "@/lib/encryption"
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
@@ -38,6 +40,7 @@ export default function ChatPage() {
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(true);
@@ -267,8 +270,6 @@ export default function ChatPage() {
             content,
             created_at,
             profile_id,
-            is_encrypted,
-            encryption_header,
             profiles ( id, full_name, username, avatar_url )
           `
           )
@@ -277,34 +278,7 @@ export default function ChatPage() {
 
         if (messagesError) throw messagesError;
 
-        // Decrypt messages before formatting
-        const decryptedMessages = await Promise.all(
-          data.map(async (msg) => {
-            if (msg.is_encrypted) {
-              console.log(
-                `[FetchMessages] Message ${msg.id} is encrypted. Decryption needed.`
-              );
-              // TODO: Implement call to /api/signal/decrypt
-              // For now, show placeholder
-              try {
-                const header = JSON.parse(msg.encryption_header || "{}");
-                return {
-                  ...msg,
-                  content: `🔒 Encrypted (Type ${
-                    header.type
-                  }) - [${msg.content.substring(0, 10)}...]`,
-                };
-              } catch {
-                return { ...msg, content: "🔒 Encrypted [Invalid Header]" };
-              }
-            } else {
-              // If not encrypted, return as is
-              return msg;
-            }
-          })
-        );
-
-        const formatted = decryptedMessages.map(formatMessage).filter(Boolean); // Format potentially decrypted messages
+        const formatted = data.map(formatMessage).filter(Boolean); // Format and remove nulls
         setMessages(formatted);
       } catch (err) {
         console.error("Error fetching messages:", err);
@@ -340,10 +314,8 @@ export default function ChatPage() {
     const handleNewMessage = async (payload) => {
       console.log("[Realtime] handleNewMessage triggered:", payload);
 
-      const newMessageData = payload.new;
-
       // Check if it belongs to the current conversation (extra safety)
-      if (newMessageData.conversation_id !== selectedConversation.id) {
+      if (payload.new.conversation_id !== selectedConversation.id) {
         console.log(
           "[Realtime] Message is for a different conversation, skipping."
         );
@@ -351,53 +323,31 @@ export default function ChatPage() {
       }
 
       // Avoid adding duplicates if message already exists (e.g., from initial fetch)
-      if (messages.some((msg) => msg.id === newMessageData.id)) {
+      if (messages.some((msg) => msg.id === payload.new.id)) {
         console.log("[Realtime] Duplicate message detected, skipping.");
         return;
       }
 
       // Fetch sender profile for the new message
+      // Note: This adds an extra fetch per message. For high traffic, consider including profile data in the payload or using DB functions.
       const { data: senderProfile, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name, username, avatar_url")
-        .eq("id", newMessageData.profile_id)
+        .eq("id", payload.new.profile_id)
         .single();
 
       if (profileError) {
-        console.error(
-          "[Realtime] Error fetching profile for new message:",
-          profileError
-        );
+        console.error("Error fetching profile for new message:", profileError);
+        // Optionally handle the error, maybe display message with 'Unknown Sender'
         return;
       }
 
       console.log("[Realtime] Fetched sender profile:", senderProfile);
 
-      let contentToFormat = { ...newMessageData, profiles: senderProfile };
-
-      // Check if message is encrypted and attempt decryption
-      if (newMessageData.is_encrypted) {
-        console.log(
-          `[Realtime] Message ${newMessageData.id} is encrypted. Decryption needed.`
-        );
-        // TODO: Implement call to /api/signal/decrypt for realtime messages
-        // Show placeholder for now
-        try {
-          const header = JSON.parse(newMessageData.encryption_header || "{}");
-          contentToFormat.content = `🔒 Encrypted (Type ${
-            header.type
-          }) - [${newMessageData.content.substring(0, 10)}...]`;
-        } catch {
-          contentToFormat.content = "🔒 Encrypted [Invalid Header]";
-        }
-      } else {
-        console.log(
-          `[Realtime] Message ${newMessageData.id} is not encrypted.`
-        );
-      }
-
-      // Format the message for the UI (using potentially decrypted content)
-      const formatted = formatMessage(contentToFormat);
+      const formatted = formatMessage({
+        ...payload.new,
+        profiles: senderProfile,
+      });
       if (formatted) {
         console.log("[Realtime] Adding formatted message to state:", formatted);
         setMessages((prevMessages) => [...prevMessages, formatted]);
@@ -455,119 +405,44 @@ export default function ChatPage() {
   );
 
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !selectedConversation || !profile?.id) return;
+    if (!newMessage.trim() || !selectedConversation || !currentUser) return;
 
-    // Correctly find the recipient's profile object from the participants array
-    const recipientProfile = selectedConversation.participants.find(
-      (p) => p.id !== profile.id // Compare participant's id with the current user's profile id
-    );
-
-    if (!recipientProfile) {
-      console.error(
-        "Could not find recipient profile in selected conversation."
-      );
-      setError("Error sending message: Recipient not found.");
-      return;
-    }
-
-    const recipientId = recipientProfile.id;
-    // REMOVED: We don't need Signal address objects in frontend anymore
-    // const recipientAddress = new SignalProtocolAddress(
-    //   recipientId,
-    //   1
-    // );
-    // const senderAddress = new SignalProtocolAddress(profile.id, 1);
+    const content = newMessage.trim();
+    const conversationId = selectedConversation.id;
+    const profileId = currentUser.id;
 
     console.log(
-      `[SendMessage] Attempting to send: "${newMessage}" to recipient ${recipientId} in convo ${selectedConversation.id}`
+      `[SendMessage] Attempting to send: "${content}" to convo ${conversationId}`
     );
 
+    setNewMessage("");
+
     try {
-      setLoadingMessages(true); // Indicate activity
-      const plaintextMessage = newMessage.trim();
-      setNewMessage(""); // Clear input immediately
+      const { data: insertedData, error: insertError } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: conversationId,
+          profile_id: profileId,
+          content: content,
+        })
+        .select(); // Select the inserted row data
 
-      // --- Call Backend Encryption API ---
-      console.log(
-        `[SendMessage] Calling /api/signal/encrypt for recipient ${recipientId}...`
-      );
-      const encryptResponse = await fetch("/api/signal/encrypt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // TEMPORARY: Sending senderId in body. TODO: Use Auth header instead.
-        body: JSON.stringify({
-          senderId: profile.id,
-          recipientId: recipientId,
-          plaintext: plaintextMessage,
-        }),
-      });
-
-      if (!encryptResponse.ok) {
-        let errorData = {
-          message:
-            "Encryption API failed with status: " + encryptResponse.status,
-        };
-        try {
-          errorData = await encryptResponse.json(); // Try to parse JSON error
-        } catch {
-          console.warn(
-            "[SendMessage] Failed to parse JSON error from encrypt API."
-          );
-        }
-        console.error("[SendMessage] API Error encrypting message:", errorData);
-        throw new Error(
-          `API Error: ${errorData.message || "Failed to encrypt message"}`
+      if (insertError) {
+        // Log error specifically
+        console.error("[SendMessage] Error sending message:", insertError);
+        setError(`Failed to send message: ${insertError.message}`);
+      } else {
+        // Log success
+        console.log(
+          "[SendMessage] Message insert successful, data:",
+          insertedData
         );
-      }
-
-      const { type, body: ciphertextBase64 } = await encryptResponse.json(); // Expects { type: number, body: string (base64) }
-      console.log(
-        `[SendMessage] Encryption successful via API. Type: ${type}, Ciphertext: ${ciphertextBase64.substring(
-          0,
-          20
-        )}...`
-      );
-      // --- END Backend API Call ---
-
-      // --- TODO: Send to actual message storage API ---
-      console.log(
-        `[SendMessage] TODO: Send this ciphertext to /api/messages/send`
-      );
-      const messagePayload = {
-        conversation_id: selectedConversation.id,
-        sender_id: profile.id,
-        recipient_id: recipientId, // Good to include for backend routing/checks
-        ciphertext: ciphertextBase64,
-        type: type, // Send type (1 or 3)
-      };
-      console.log(
-        "[SendMessage] Placeholder payload for next step:",
-        messagePayload
-      );
-
-      // Simulate adding the *plaintext* locally until backend is ready
-      // This will be replaced by the subscription update later
-      const tempFormattedMsg = formatMessage({
-        id: Date.now(), // temp ID
-        profiles: profile,
-        content: plaintextMessage, // Show plaintext for now
-        created_at: new Date().toISOString(),
-        conversation_id: selectedConversation.id,
-        sender_id: profile.id, // Use actual sender ID
-      });
-      if (tempFormattedMsg) {
-        setMessages((prev) => [...prev, tempFormattedMsg]);
+        setError(null); // Clear previous errors on success
+        // Real-time should handle adding it to the list, so no setMessages here needed usually
       }
     } catch (err) {
-      console.error(
-        "[SendMessage] Error during message encryption/sending process:",
-        err
-      );
-      setError(`Error sending message: ${err.message}`);
-      // Optionally, restore the input field content if sending fails
-      // setNewMessage(newMessage); // Be careful not to re-trigger send on state change
-    } finally {
-      setLoadingMessages(false);
+      console.error("[SendMessage] Unexpected error sending message:", err);
+      setError("An unexpected error occurred while sending.");
     }
   };
 
@@ -1041,7 +916,7 @@ export default function ChatPage() {
         </ScrollArea>
 
         {/* Message Input */}
-        <div className="p-4 border-t border-slate-700 bg-slate-800">
+        <div className="p-4 border-t border-slate-700 bg-slate-800 relative">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -1063,6 +938,14 @@ export default function ChatPage() {
               disabled={!selectedConversation || loadingConversations}
             />
             <Button
+             type="button"
+             variant="ghost"
+             size="icon"
+             onClick={() => setShowEmojiPicker((prev) => !prev)}
+            >
+            😀
+          </Button>
+            <Button
               type="submit"
               size="icon"
               className="bg-emerald-500 hover:bg-emerald-600 text-white"
@@ -1075,6 +958,15 @@ export default function ChatPage() {
               <Send className="h-5 w-5" />
             </Button>
           </form>
+          {showEmojiPicker && (
+  <div className="absolute bottom-24 right-8 z-50">
+    <EmojiPicker
+      onEmojiClick={(emojiData) => {
+        setNewMessage((prev) => prev + emojiData.emoji);
+      }}
+    />
+  </div>
+)}
         </div>
       </div>
     </div>
