@@ -1344,7 +1344,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => setShowEmojiPicker((prev) => !prev)}
             >
-              😀
+              😀.
             </Button>
             <Button
               type="submit"
