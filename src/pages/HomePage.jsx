@@ -17,13 +17,8 @@ export default function HomePage() {
   const [currentPhrase, setCurrentPhrase] = useState(0);
   const [randomPosition, setRandomPosition] = useState({ top: "50%", left: "50%" });
 
-  useEffect(() => {
-    // Set a random position immediately when the page loads
-    const top = Math.floor(Math.random() * 30) + 30;  // between 30% and 70%
-    const left = Math.floor(Math.random() * 5) + 50; // between 60% and 75%      
-    setRandomPosition({ top: `${top}%`, left: `${left}%` });
-  
-    const interval = setInterval(() => {
+  useEffect(() => { 
+      const interval = setInterval(() => {
       setCurrentPhrase((prev) => (prev + 1) % phrases.length);
   
       const top = Math.floor(Math.random() * 30) + 30;  // between 30% and 70%
@@ -39,7 +34,7 @@ export default function HomePage() {
       {/* Header */}
       <header className="container mx-auto p-4 flex justify-between items-center">
         <div className="flex items-center gap-2">
-          <Lock className="h-8 w-8 text-amber-500" />
+          <Lock className="h-8 w-8 text-emerald-500" />
           <span className="font-bold text-white text-2xl">SecureChat</span>
         </div>
       </header>
@@ -47,16 +42,22 @@ export default function HomePage() {
        {/* Main Section */}
       <main className="flex-1 container mx-auto px-4 py-12 flex flex-col md:flex-row items-center justify-center text-center gap-8">
 
-        {/* Left Side Illustration */}
-        <div className="hidden 2xl:flex flex-1 justify-center items-center relative">
-          <div className="absolute w-64 h-64 bg-emerald-400/20 rounded-full blur-3xl">
+        {/* Left Side Content */}
+        <div className="hidden 2xl:flex flex-1">
+          <div className="flex flex-col">
+            <img
+              src="/images/green_text.png"
+              alt="Chat bubble green"
+              className="w-60 ml-0"
+            />
+            <img
+              src="/images/blue_text.png"
+              alt="Chat bubble blue"
+              className="w-60 ml-30"
+            />
           </div>
-          <img
-            src="/images/safechat.png"
-            alt="Secure Illustration"
-            className="w-60 h-60 object-cover rounded-2xl opacity-80"
-          />         
         </div>
+
 
         {/* Center Content */}
         <motion.div
@@ -67,12 +68,12 @@ export default function HomePage() {
         >
           <div className="mb-6 flex justify-center">
             <div className="relative drop-shadow-lg">
-              <Lock className="h-20 w-20 text-amber-500" />
+              <Lock className="h-20 w-20 text-emerald-500" />
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ delay: 0.3, duration: 0.5 }}
-                className="absolute -top-1 -right-1 bg-emerald-400 rounded-full p-1 shadow-md"
+                className="absolute -top-1 -right-1 bg-blue-400 rounded-full p-1 shadow-md"
               >
                 <Shield className="h-6 w-6 text-slate-900" />
               </motion.div>
@@ -146,7 +147,7 @@ export default function HomePage() {
 
           <div className="flex flex-col sm:flex-row gap-4 mt-1">
             <Link to="/signup" className="w-full">
-              <Button className="w-full bg-amber-500 hover:bg-amber-600 text-white">
+              <Button className="w-full bg-blue-400 hover:bg-blue-600 text-white">
                 Get Started <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             </Link>
