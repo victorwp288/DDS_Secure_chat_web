@@ -2,9 +2,8 @@ import { Button } from "@/components/ui/button";
 import { ArrowRight, Lock, MessageSquare, Shield, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 //eslint-disable-next-line
-import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useState } from "react";
 
 export default function HomePage() {
   //Phrases to be displayed on right side of page
