@@ -958,6 +958,7 @@ export default function ChatPage() {
               <Send className="h-5 w-5" />
             </Button>
           </form>
+          // --- Emoji Picker Feature ---
           {showEmojiPicker && (
   <div className="absolute bottom-24 right-8 z-50">
     <EmojiPicker
