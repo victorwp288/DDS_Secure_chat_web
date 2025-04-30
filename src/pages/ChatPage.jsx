@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import EmojiPicker from 'emoji-picker-react';
+import EmojiPicker from "emoji-picker-react";
 import {
   ArrowLeft,
   LogOut,
@@ -728,34 +728,7 @@ export default function ChatPage() {
         throw new Error(
           `Database Error: ${insertError.message || "Failed to save message"}`
         );
-    if (!selectedConversation || !currentUser || (!newMessage.trim() && !selectedFile)) return;
-  
-    const conversationId = selectedConversation.id;
-    const profileId = currentUser.id;
-  
-    try {
-      if (newMessage.trim()) {
-        await supabase
-          .from("messages")
-          .insert({
-            conversation_id: conversationId,
-            profile_id: profileId,
-            content: newMessage.trim(),
-          });
       }
-  
-      if (selectedFile) {
-        await supabase
-          .from("messages")
-          .insert({
-            conversation_id: conversationId,
-            profile_id: profileId,
-            content: `[File] ${selectedFile.name}`,
-          });
-
-      }
-
-      console.log("[SendMessage] Message stored successfully in Supabase.");
 
       // --- Step 3: Store Plaintext Locally in IndexedDB ---
       if (!insertedMessages?.id) {
@@ -812,22 +785,21 @@ export default function ChatPage() {
       setNewMessage(plaintextMessage); // Put message back on error
     } finally {
       // setLoadingMessages(false); // Maybe not needed here as insert is quick?
+      setNewMessage("");
+      setSelectedFile(null);
     }
-  
-    setNewMessage("");
-    setSelectedFile(null);
   };
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (!file) return;
-  
+
     const maxSizeMB = 10;
     if (file.size > maxSizeMB * 1024 * 1024) {
       alert(`File size exceeds ${maxSizeMB}MB limit.`);
       return;
     }
-  
+
     setSelectedFile(file);
   };
 
@@ -1280,7 +1252,9 @@ export default function ChatPage() {
                         {message.content.startsWith("[File](") ? (
                           // Format: [File](url) filename
                           (() => {
-                            const match = message.content.match(/\[File\]\((.*?)\)\s*(.*)/);
+                            const match = message.content.match(
+                              /\[File\]\((.*?)\)\s*(.*)/
+                            );
                             const url = match?.[1];
                             const name = match?.[2] || "Download File";
                             return (
@@ -1296,7 +1270,9 @@ export default function ChatPage() {
                           })()
                         ) : message.content.startsWith("[File] ") ? (
                           // Format: [File] filename (no URL yet — fallback)
-                          <span className="text-slate-300">📎 {message.content.slice(7)}</span>
+                          <span className="text-slate-300">
+                            📎 {message.content.slice(7)}
+                          </span>
                         ) : (
                           message.content
                         )}
@@ -1339,8 +1315,8 @@ export default function ChatPage() {
               className="text-slate-400 hover:text-white"
               onClick={() => fileInputRef.current.click()}
             >
-             📎
-             </Button>
+              📎
+            </Button>
 
             <input
               type="file"
@@ -1363,13 +1339,13 @@ export default function ChatPage() {
               disabled={!selectedConversation || loadingConversations}
             />
             <Button
-             type="button"
-             variant="ghost"
-             size="icon"
-             onClick={() => setShowEmojiPicker((prev) => !prev)}
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowEmojiPicker((prev) => !prev)}
             >
-            😀
-          </Button>
+              😀
+            </Button>
             <Button
               type="submit"
               size="icon"
@@ -1383,23 +1359,20 @@ export default function ChatPage() {
               <Send className="h-5 w-5" />
             </Button>
           </form>
-          // --- Emoji Picker Feature ---
           {showEmojiPicker && (
-  <div className="absolute bottom-24 right-8 z-50">
-    <EmojiPicker
-      onEmojiClick={(emojiData) => {
-        setNewMessage((prev) => prev + emojiData.emoji);
-      }}
-    />
-  </div>
-)}
-          </form> 
-
+            <div className="absolute bottom-24 right-8 z-50">
+              <EmojiPicker
+                onEmojiClick={(emojiData) => {
+                  setNewMessage((prev) => prev + emojiData.emoji);
+                }}
+              />
+            </div>
+          )}
           {selectedFile && (
             <div className="text-slate-400 text-xs mt-2 ml-2">
-                Attached: {selectedFile.name}
+              Attached: {selectedFile.name}
             </div>
-          )}   
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-const API = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+const API = import.meta.env.VITE_BACKEND_URL 
 
 /** POST helper that automatically JSON-encodes the body */
 export async function post(path, payload) {
