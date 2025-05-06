@@ -24,7 +24,33 @@ function getDb() {
 
       request.onsuccess = (event) => {
         console.log("IndexedDB opened successfully.");
-        resolve(event.target.result);
+        const db = event.target.result; // Get the DB instance
+
+        // --- Add event listeners to the DB connection itself --- START ---
+        db.onclose = () => {
+          console.warn("IndexedDB connection closed unexpectedly.");
+          dbPromise = null; // Reset promise so it reopens on next call
+        };
+        db.onerror = (event) => {
+          // Log errors that occur on the connection after it's opened
+          console.error(
+            "Unhandled IndexedDB database error:",
+            event.target.error
+          );
+          // Optionally close and reset
+          dbPromise = null;
+        };
+        db.onversionchange = () => {
+          // Handle requests to upgrade the DB from other tabs/windows
+          console.warn(
+            "IndexedDB version change requested. Closing old connection..."
+          );
+          db.close(); // Close the current connection to allow the upgrade
+          dbPromise = null; // Reset promise
+        };
+        // --- Add event listeners to the DB connection itself --- END ---
+
+        resolve(db); // Resolve the promise with the db instance
       };
 
       // This event only executes if the version number changes
@@ -68,28 +94,80 @@ function getDb() {
 async function performDbOperation(storeName, mode, operation) {
   const db = await getDb();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(storeName, mode);
-    const store = transaction.objectStore(storeName);
-    const request = operation(store);
+    let requestResult = undefined; // Variable to store result from request.onsuccess
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (event) => {
+    // --- Wrap transaction creation in try-catch --- START ---
+    try {
+      const transaction = db.transaction(storeName, mode);
+      const store = transaction.objectStore(storeName);
+
+      // Add logging for transaction aborts
+      transaction.onabort = (event) => {
+        console.error(
+          `IndexedDB transaction ABORTED on ${storeName} (Mode: ${mode}):`,
+          event.target.error
+        );
+        reject(
+          event.target.error || new Error(`Transaction aborted on ${storeName}`)
+        );
+      };
+
+      const request = operation(store);
+
+      request.onsuccess = (event) => {
+        // Store the result for read operations or if needed
+        requestResult = event.target.result;
+        // For read operations, we could resolve here, but waiting for
+        // transaction complete is safer even for reads if subsequent
+        // operations depend on this read finishing *within its transaction*.
+        // Let's simplify and always resolve on transaction complete/error.
+      };
+      request.onerror = (event) => {
+        console.error(
+          `IndexedDB request error on ${storeName} (Mode: ${mode}):`,
+          event.target.error
+        );
+        // Don't reject here, let transaction.onerror handle it to ensure
+        // the transaction error bubbles up properly.
+      };
+
+      transaction.oncomplete = () => {
+        // Transaction succeeded, resolve with the stored result
+        console.debug(
+          `IndexedDB transaction complete on ${storeName}. Mode: ${mode}.`
+        );
+        resolve(requestResult);
+      };
+      transaction.onerror = (event) => {
+        console.error(
+          `IndexedDB transaction error on ${storeName} (Mode: ${mode}):`,
+          event.target.error
+        );
+        reject(event.target.error); // Reject promise on transaction error
+      };
+    } catch (err) {
       console.error(
-        `IndexedDB operation error on ${storeName}:`,
-        event.target.error
+        `Error initiating transaction on ${storeName} (Mode: ${mode}):`,
+        err
       );
-      reject(event.target.error);
-    };
-    transaction.oncomplete = () => {
-      // Optional: Log transaction completion
-    };
-    transaction.onerror = (event) => {
-      console.error(
-        `IndexedDB transaction error on ${storeName}:`,
-        event.target.error
-      );
-      reject(event.target.error); // Reject promise on transaction error too
-    };
+      // Check if the error is the specific connection closing error
+      if (err instanceof DOMException && err.name === "InvalidStateError") {
+        console.warn(
+          "Database connection was closed when trying to start transaction. Resetting promise..."
+        );
+        // Reset dbPromise to force re-initialization on next call
+        dbPromise = null;
+        // Reject with a specific error message
+        reject(
+          new Error(
+            "Database connection was closed. Please retry the operation."
+          )
+        );
+      } else {
+        reject(err); // Re-throw other errors
+      }
+    }
+    // --- Wrap transaction creation in try-catch --- END ---
   });
 }
 
@@ -202,16 +280,18 @@ export class IndexedDBStore {
     return trustedB64 === identityKeyB64;
   }
   async loadPreKey(keyId) {
-    console.log(`IndexedDBStore: loadPreKey for ${keyId}`);
-    if (keyId === undefined || keyId === null) {
-      throw new Error("Cannot load PreKey with invalid keyId");
-    }
-    const key = await performDbOperation(
+    console.log(`[DB Store] loadPreKey called for key ID: ${keyId}`);
+    const keyPair = await performDbOperation(
       PREKEY_STORE_NAME,
       "readonly",
-      (store) => store.get(Number(keyId)) // Ensure keyId is treated as number if needed
+      (store) => store.get(Number(keyId))
     );
-    return key ? deserializeBuffers(key) : undefined;
+    if (!keyPair) {
+      console.warn(`[DB Store] loadPreKey: Key ID ${keyId} not found.`);
+    } else {
+      console.log(`[DB Store] loadPreKey: Found key for ID ${keyId}.`);
+    }
+    return keyPair ? deserializeBuffers(keyPair) : undefined;
   }
   async loadSession(identifier) {
     console.log(`IndexedDBStore: loadSession for ${identifier}`);
@@ -224,26 +304,26 @@ export class IndexedDBStore {
       (store) => store.get(identifier)
     );
     console.log(
-      `[DB Store] loadSession(${identifier}) result: ${session ? "Found" : "Not Found"}`,
+      `[DB Store] loadSession(${identifier}) result: ${
+        session ? "Found" : "Not Found"
+      }`,
       session // Log the raw session object
     );
     return session ? deserializeBuffers(session) : undefined; // Re-enable deserialization
   }
   async loadSignedPreKey(keyId) {
-    console.log(`IndexedDBStore: loadSignedPreKey for ${keyId}`);
-    const key = await performDbOperation(
+    console.log(`[DB Store] loadSignedPreKey called for key ID: ${keyId}`);
+    const keyPair = await performDbOperation(
       SIGNED_PREKEY_STORE_NAME,
       "readonly",
       (store) => store.get(keyId)
     );
-    // Ensure deserialization happens
-    const deserializedKey = key ? deserializeBuffers(key) : undefined;
-    console.log(
-      `[DB Store] loadSignedPreKey(${keyId}) result: ${
-        deserializedKey ? "Found" : "Not Found"
-      }`
-    );
-    return deserializedKey;
+    if (!keyPair) {
+      console.warn(`[DB Store] loadSignedPreKey: Key ID ${keyId} not found.`);
+    } else {
+      console.log(`[DB Store] loadSignedPreKey: Found key for ID ${keyId}.`);
+    }
+    return keyPair ? deserializeBuffers(keyPair) : undefined;
   }
   async loadIdentityKey(identifier) {
     console.log(`IndexedDBStore: loadIdentityKey for ${identifier}`);
@@ -307,13 +387,19 @@ export class IndexedDBStore {
 
   // --- Removers ---
   async removePreKey(keyId) {
-    console.warn(`IndexedDBStore: removePreKey for ${keyId}`);
+    console.warn(
+      `[DB Store] NO-OP: removePreKey called for ${keyId}, but deletion is disabled.`
+    );
     if (keyId === undefined || keyId === null) {
       throw new Error("Cannot remove PreKey with invalid keyId");
     }
+    // Do nothing - keep the key
+    return Promise.resolve(); // Return resolved promise to satisfy libsignal
+    /* Original implementation:
     return performDbOperation(PREKEY_STORE_NAME, "readwrite", (store) =>
       store.delete(Number(keyId))
     );
+    */
   }
 
   async removeSession(identifier) {
@@ -352,7 +438,64 @@ export class IndexedDBStore {
     return this.removeSession(fullIdentifier);
   }
 
+  /**
+   * Delete the cached identity-public-key for a peer.
+   * @param {string} identifier – full "recipientId.deviceId" string,
+   *                              e.g. "2a2d1c4c-7336-41e9-a6d5-cfb980162071.1"
+   */
+  async removeIdentity(identifier) {
+    console.warn(`IndexedDBStore: removeIdentity for ${identifier}`);
+    if (!identifier) {
+      throw new Error("Cannot remove identity with invalid identifier");
+    }
+    // Note: The key in the store is prefixed with 'identity_'
+    return performDbOperation(IDENTITY_STORE_NAME, "readwrite", (store) =>
+      store.delete(`identity_${identifier}`)
+    );
+  }
+
   // --- Misc ---
+
+  // --- Add missing methods --- START ---
+  async containsSession(identifier) {
+    console.log(`IndexedDBStore: containsSession for ${identifier}`);
+    if (!identifier) {
+      console.warn("[DB Store] containsSession called with invalid identifier");
+      return false; // Or throw? Let's return false for boolean check.
+    }
+    // Check if a session exists by attempting to get it (returns undefined if not found)
+    const session = await performDbOperation(
+      SESSION_STORE_NAME,
+      "readonly",
+      (store) => store.get(identifier) // Use get instead of loadSession to avoid deserialization cost
+    );
+    const exists = session !== undefined; // Check if *any* value was retrieved
+    console.log(`[DB Store] containsSession(${identifier}) result: ${exists}`);
+    return exists;
+  }
+
+  // libsignal older builds might call sessionExists, alias for compatibility
+  // Although current error is for containsSession, this is safe to include
+  sessionExists(identifier) {
+    return this.containsSession(identifier);
+  }
+
+  // libsignal expects deleteSession
+  async deleteSession(identifier) {
+    console.log(`IndexedDBStore: deleteSession for ${identifier}`);
+    // Delegate to the existing removeSession logic
+    return this.removeSession(identifier);
+  }
+
+  // libsignal expects deleteAllSessions
+  async deleteAllSessions(identifierBase) {
+    console.log(`IndexedDBStore: deleteAllSessions for ${identifierBase}`);
+    // Delegate to the existing removeAllSessions logic
+    // Note: The current removeAllSessions only handles deviceId 1.
+    // Needs refinement if multiple devices are supported.
+    return this.removeAllSessions(identifierBase);
+  }
+  // --- Add missing methods --- END ---
 
   /**
    * Clears the entire IndexedDB database used by the store.

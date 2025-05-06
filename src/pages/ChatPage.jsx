@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import EmojiPicker from 'emoji-picker-react';
+import EmojiPicker from "emoji-picker-react";
 import {
   ArrowLeft,
   LogOut,
@@ -29,10 +29,171 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
-// import { encryptMessage } from "@/lib/encryption"
+import { useSignal } from "../SignalContext";
+import {
+  encryptMessage,
+  decryptMessage,
+  arrayBufferToString,
+  buildSession,
+  buf2hex,
+  ensureIdentity,
+  hexToUint8Array,
+} from "../lib/signalUtils";
+import { SignalProtocolAddress } from "@privacyresearch/libsignal-protocol-typescript";
+import { get } from "../lib/backend";
+import { cacheSentMessage, getCachedMessageContent } from "../lib/db"; // Import Dexie helpers
+
+// Helper function to convert PostgreSQL bytea hex escape format ('\\x...') to ArrayBuffer
+/* REMOVED - Use hexToUint8Array from signalUtils instead
+function hexStringToArrayBuffer(hexString) {
+  // Check if the string starts with the literal '\x'
+  if (!hexString || !hexString.startsWith("\\x")) {
+    // Note: In JS string literals, '\\x' represents the two characters \ and x
+    console.warn(
+      "[hexStringToArrayBuffer] Invalid or non-hex string format received:",
+      hexString
+    );
+    return null;
+  }
+  // Remove the leading '\x' prefix (2 characters)
+  const hex = hexString.substring(2);
+
+  // Validate remaining hex string length
+  if (hex.length % 2 !== 0) {
+    console.error(
+      "[hexStringToArrayBuffer] Hex string (after prefix removal) must have an even number of digits:",
+      hex
+    );
+    return null;
+  }
+
+  // Convert hex pairs to bytes
+  const byteArray = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    const byte = parseInt(hex.substring(i, i + 2), 16);
+    if (isNaN(byte)) {
+      // Add check for invalid hex characters
+      console.error(
+        `[hexStringToArrayBuffer] Invalid hex character pair found: ${hex.substring(
+          i,
+          i + 2
+        )}`
+      );
+      return null;
+    }
+    byteArray[i / 2] = byte;
+  }
+  return byteArray.buffer; // Return the underlying ArrayBuffer
+}
+*/
+
+// Helper function to convert ArrayBuffer or ArrayBufferView to PostgreSQL bytea hex format ('\\x...')
+/* REMOVED - Use binaryStringToHex from signalUtils instead
+function arrayBufferToHex(input) {
+  console.log("[arrayBufferToHex] Received input:", input);
+
+  // Accept both kinds transparently
+  // 🔧 NEW – accept the raw binary string returned by SessionCipher.encrypt
+  let view;
+  if (typeof input === "string") {
+    // Each charCode is already 0-255, so this is loss-less
+    console.log(
+      "[arrayBufferToHex] Input is string, attempting charCode conversion."
+    );
+    view = Uint8Array.from(input, (ch) => ch.charCodeAt(0));
+  } else if (input instanceof ArrayBuffer) {
+    console.log("[arrayBufferToHex] Input is ArrayBuffer.");
+    view = new Uint8Array(input);
+  } else if (ArrayBuffer.isView(input)) {
+    console.log("[arrayBufferToHex] Input is ArrayBufferView.");
+    view = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  } else {
+    console.error("[arrayBufferToHex] Unsupported input:", input);
+    return null;
+  }
+
+  if (!view) {
+    // This case should technically not be reachable if the checks above are exhaustive
+    console.error(
+      "[arrayBufferToHex] Failed to create Uint8Array view from input.",
+      input
+    );
+    return null;
+  }
+
+  if (!view.byteLength) {
+    console.warn("[arrayBufferToHex] Received empty buffer/view.");
+    return "\\x";
+  }
+
+  try {
+    // More modern/concise hex conversion
+    const hex = [...view].map((b) => b.toString(16).padStart(2, "0")).join("");
+    console.log("[arrayBufferToHex] Joined hex string (no prefix):", hex);
+
+    const finalHexString = "\\x" + hex;
+    console.log(
+      "[arrayBufferToHex] Final hex string with prefix:",
+      finalHexString
+    );
+    return finalHexString;
+  } catch (error) {
+    console.error(
+      "[arrayBufferToHex] Error during conversion:",
+      error,
+      "Input:",
+      input
+    );
+    return null; // Return null on error
+  }
+}
+*/
+
+// Helper function to convert Base64 string to ArrayBuffer
+function base64ToArrayBuffer(base64) {
+  if (!base64) {
+    console.warn("[base64ToArrayBuffer] Received null or empty input.");
+    return null;
+  }
+  try {
+    const binaryString = window.atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (e) {
+    console.error(
+      "[base64ToArrayBuffer] Failed to decode Base64 string:",
+      e,
+      "Input:",
+      base64
+    );
+    return null; // Indicate failure
+  }
+}
+
+// Helper function to convert ArrayBuffer to Base64 string (useful for sending/storing if not using hex)
+// eslint-disable-next-line no-unused-vars
+function arrayBufferToBase64(buffer) {
+  if (!buffer) {
+    console.warn("[arrayBufferToBase64] Received null input.");
+    return null;
+  }
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
 
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
+
+  const { signalStore } = useSignal();
   // --- State Variables ---
   const [currentUser, setCurrentUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -49,6 +210,9 @@ export default function ChatPage() {
   const [messageSubscription, setMessageSubscription] = useState(null);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
 
+  // 👇 Log messages state on each render
+  console.log("[render] messages state length =", messages.length, messages);
+
   const isMobile = useMobile();
   const navigate = useNavigate();
   const messagesEndRef = useRef(null);
@@ -56,31 +220,6 @@ export default function ChatPage() {
   // --- Helper Functions ---
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  // Format Supabase message to UI structure
-  const formatMessage = (msg) => {
-    if (!msg || !msg.profiles) {
-      console.warn("Attempted to format invalid message:", msg);
-      return null; // Or return a default structure
-    }
-    const senderProfile = msg.profiles;
-    const timestamp = msg.created_at
-      ? new Date(msg.created_at).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
-    return {
-      id: msg.id,
-      senderId: senderProfile.id, // Keep sender ID
-      senderName:
-        senderProfile.full_name || senderProfile.username || "Unknown User",
-      senderAvatar: senderProfile.avatar_url,
-      content: msg.content,
-      timestamp: timestamp,
-      isSelf: senderProfile.id === currentUser?.id,
-    };
   };
 
   // --- Effects ---
@@ -113,6 +252,26 @@ export default function ChatPage() {
 
       console.log("[Effect 1] User found:", session.user);
       setCurrentUser(session.user);
+
+      // --- Ensure identity keys exist BEFORE fetching profile --- START ---
+      try {
+        console.log("[Effect 1] Ensuring Signal identity...");
+        await ensureIdentity(session.user.id); // <-- Pass user ID here
+        console.log("[Effect 1] Signal identity ensured.");
+      } catch (identityError) {
+        console.error(
+          "[Effect 1] Failed to ensure Signal identity:",
+          identityError
+        );
+        setError(
+          `Failed to initialize secure session keys: ${identityError.message}`
+        );
+        setLoadingConversations(false);
+        // Optionally, clear stored keys if initialization failed halfway?
+        // await signalStore.clearAllData(); // USE WITH CAUTION!
+        return; // Stop if identity cannot be ensured
+      }
+      // --- Ensure identity keys exist BEFORE fetching profile --- END ---
 
       // Fetch profile details
       console.log("[Effect 1] Fetching profile for user ID:", session.user.id);
@@ -253,21 +412,86 @@ export default function ChatPage() {
 
   // 3. Fetch messages when selectedConversation changes
   useEffect(() => {
-    if (!selectedConversation?.id || !currentUser?.id) {
-      setMessages([]); // Clear messages if no conversation selected
+    if (!selectedConversation?.id || !currentUser?.id || !signalStore) {
+      setMessages([]); // Clear messages if no conversation selected or signal not ready
       return;
     }
 
-    const fetchMessages = async () => {
+    // --- Define Recipient Info --- //
+    // Find the other participant in the selected conversation
+    const recipientParticipant = selectedConversation.participants.find(
+      (p) => p.id !== currentUser.id
+    );
+
+    if (!recipientParticipant) {
+      console.error(
+        "Could not find recipient participant in conversation:",
+        selectedConversation
+      );
+      setError("Error identifying recipient in this conversation.");
+      setMessages([]);
+      setLoadingMessages(false);
+      return;
+    }
+
+    const recipientId = recipientParticipant.id;
+    // Assuming deviceId is always 1 for now
+    const deviceId = 1;
+    const recipientAddress = new SignalProtocolAddress(recipientId, deviceId);
+    const recipientAddressString = recipientAddress.toString();
+    console.log(`[Effect 3] Target recipient: ${recipientAddressString}`);
+
+    const fetchMessagesAndEnsureSession = async () => {
       setLoadingMessages(true);
       setError(null); // Clear previous errors
+
       try {
+        // --- Ensure local identity keys exist --- START ---
+        const localKeys = await ensureIdentity(); // Call the helper
+        if (!localKeys) {
+          throw new Error("Failed to ensure local Signal identity keys exist.");
+        }
+        // --- Ensure local identity keys exist --- END ---
+
+        // --- Check for existing session with PEER --- //
+        console.log(
+          `[Effect 3] Checking for existing session with ${recipientAddressString}...`
+        );
+        const existingSession = await signalStore.loadSession(
+          recipientAddressString
+        );
+
+        // --- Log the loaded session --- START
+        if (existingSession) {
+          console.log(
+            `[Effect 3] Deserialized existing session for ${recipientAddressString}:`,
+            existingSession
+          );
+        } else {
+          console.log(
+            `[Effect 3] No existing session found for ${recipientAddressString} after load attempt.`
+          );
+        }
+        // --- Log the loaded session --- END
+
+        // If no session exists here, decryption of the first PreKeyWhisperMessage
+        // should establish it implicitly. If the first message is *not* a prekey message
+        // and no session exists, decryption *will* fail, which is expected.
+        console.log(
+          `[Effect 3] Proceeding to fetch and decrypt messages for convo ${selectedConversation.id}...`
+        );
+
+        // --- Fetch Messages (Now that session is guaranteed to exist) --- //
+        console.log(
+          `[Effect 3] Fetching messages for convo: ${selectedConversation.id}`
+        );
         const { data, error: messagesError } = await supabase
           .from("messages")
           .select(
             `
             id,
-            content,
+            body, 
+            type, 
             created_at,
             profile_id,
             profiles ( id, full_name, username, avatar_url )
@@ -277,22 +501,199 @@ export default function ChatPage() {
           .order("created_at", { ascending: true });
 
         if (messagesError) throw messagesError;
+        console.log(`[Effect 3] Fetched ${data.length} raw messages.`);
 
-        const formatted = data.map(formatMessage).filter(Boolean); // Format and remove nulls
-        setMessages(formatted);
+        // Decrypt messages using a sequential loop
+        const decryptedMessages = [];
+        for (const msg of data) {
+          let processedContent = null; // <- Moved declaration to the top of the loop
+
+          // --- Skip reprocessing PreKey messages if session exists --- //
+          if (msg.type === 3 && existingSession) {
+            console.log(
+              `[Effect 3] Skipping already processed PreKeyWhisperMessage (type 3) msgId: ${msg.id}`
+            );
+            // We need the original content for the UI. Fetch from cache or show placeholder.
+            // Let's try fetching from cache, assuming it was cached on first receipt/send.
+            const cachedContent = await getCachedMessageContent(msg.id);
+            if (cachedContent) {
+              processedContent = cachedContent; // Now safe to assign
+              // Need to construct the messageForUI here as well if cached
+              const senderProfile = msg.profiles;
+              const timestamp = msg.created_at
+                ? new Date(msg.created_at).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "";
+              const messageForUI = {
+                id: msg.id,
+                senderId: senderProfile?.id || msg.profile_id,
+                senderName:
+                  senderProfile?.full_name ||
+                  senderProfile?.username ||
+                  (msg.profile_id === currentUser.id ? "Me" : "Unknown User"),
+                senderAvatar: senderProfile?.avatar_url,
+                content: processedContent,
+                timestamp: timestamp,
+                isSelf: msg.profile_id === currentUser.id,
+              };
+              decryptedMessages.push(messageForUI);
+            } else {
+              console.warn(
+                `[Effect 3] PreKey msg ${msg.id} skipped, but no cached content found. Message will be missing from UI.`
+              );
+            }
+            continue; // Move to the next message
+          }
+          // --- End Skip --- //
+
+          const senderProfile = msg.profiles; // Assuming profiles relation works
+          const timestamp = msg.created_at
+            ? new Date(msg.created_at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : "";
+
+          console.log(
+            `[Effect 3] Processing message ${msg.id}, sender: ${msg.profile_id}, current user: ${currentUser.id}`
+          );
+
+          if (msg.profile_id === currentUser.id) {
+            // Message is from the current user (self-sent)
+            console.log(
+              `[Effect 3] Message ${msg.id} is self-sent. Checking cache.`
+            );
+            const cachedContent = await getCachedMessageContent(msg.id);
+            console.log(
+              `[Effect 3] Cache result for ${msg.id}: ${cachedContent}`
+            );
+            processedContent = cachedContent ?? "[Self, uncached]"; // Assign content
+          } else {
+            // Message is from the peer
+            console.log(
+              `[Effect 3] Message ${msg.id} is from peer. Attempting decryption.`
+            );
+            // const rawHexBody = msg.body; // Old name, was hex
+
+            // Assume msg.body is \x... hex string from Supabase
+            const dbHexString = msg.body;
+            console.log(
+              `[Effect 3] Received msg.body (expected \\x... string):`,
+              typeof dbHexString === "string"
+                ? dbHexString.substring(0, 50) + "..."
+                : dbHexString
+            );
+
+            // Convert \x... hex string to Uint8Array for decryptMessage
+            let bodyUint8Array;
+            try {
+              bodyUint8Array = hexToUint8Array(dbHexString);
+            } catch (conversionError) {
+              console.error(
+                `[Effect 3] Failed to convert received hex string body to Uint8Array for msg ${msg.id}:`,
+                conversionError
+              );
+              processedContent = "[Body Hex Conversion Error]";
+              continue; // Skip this message
+            }
+
+            // ─── DEBUG: what are we about to decrypt? ───────────────────────────
+            const rawRX = bodyUint8Array; // Already have this from hexToUint8Array
+            try {
+              console.log(
+                `[DBG-RX] about-to-decrypt (Fetch) type=${msg.type}  len=${rawRX.byteLength}`,
+                `sha256=${await crypto.subtle
+                  .digest("SHA-256", rawRX)
+                  .then((buf) =>
+                    [...new Uint8Array(buf)]
+                      .map((b) => b.toString(16).padStart(2, "0"))
+                      .join("")
+                  )}`,
+                `(msgId: ${msg.id})` // Include the actual message ID
+              );
+            } catch (dbgError) {
+              console.error(
+                "[DBG-RX] Error logging debug info (Fetch):",
+                dbgError
+              );
+            }
+            // ─── END DEBUG ───────────────────────────────────────────────────────────
+
+            try {
+              const plaintextBuffer = await decryptMessage(
+                signalStore,
+                currentUser.id, // Recipient ID (current user)
+                msg.profile_id, // Sender ID (peer)
+                1, // Sender's device ID (assuming 1)
+                { type: msg.type, body: bodyUint8Array } // Pass Uint8Array body
+              );
+
+              if (plaintextBuffer) {
+                processedContent = arrayBufferToString(plaintextBuffer); // Assign content
+                console.log(
+                  `[Effect 3] Decrypted msg ${
+                    msg.id
+                  }: "${processedContent.substring(0, 20)}..."`
+                );
+              } else {
+                console.warn(
+                  `[Effect 3] Decryption returned null for msg ${msg.id}. Skipping.`
+                );
+                continue; // Skip this message iteration
+              }
+            } catch (decryptionError) {
+              console.error(
+                `[Effect 3] Decryption failed for msg ${msg.id}:`,
+                decryptionError
+              );
+              processedContent = "[Decryption Error]";
+              continue; // Skip adding this message to the UI
+            }
+          }
+
+          // --- Construct the final message object for UI --- //
+          if (processedContent !== null) {
+            // Only add if content was successfully processed (cached or decrypted)
+            const messageForUI = {
+              id: msg.id,
+              senderId: senderProfile?.id || msg.profile_id,
+              senderName:
+                senderProfile?.full_name ||
+                senderProfile?.username ||
+                (msg.profile_id === currentUser.id ? "Me" : "Unknown User"),
+              senderAvatar: senderProfile?.avatar_url,
+              content: processedContent, // Use the processed content
+              timestamp: timestamp,
+              isSelf: msg.profile_id === currentUser.id,
+            };
+            decryptedMessages.push(messageForUI);
+          }
+        } // End for...of loop
+
+        console.log(
+          `[Effect 3] Setting ${decryptedMessages.length} processed messages.`
+        );
+        setMessages(decryptedMessages); // Set the array of processed messages
       } catch (err) {
-        console.error("Error fetching messages:", err);
-        setError("Failed to load messages.");
+        console.error(
+          "[Effect 3] Error in fetchMessagesAndEnsureSession:",
+          err
+        );
+        setError(
+          `Failed to load messages or establish session: ${err.message}`
+        );
         setMessages([]); // Clear messages on error
       } finally {
         setLoadingMessages(false);
       }
     };
 
-    fetchMessages();
+    fetchMessagesAndEnsureSession(); // Call the async function
 
-    // Dependency array: Fetch when conversation or user changes
-  }, [selectedConversation?.id, currentUser?.id]);
+    // Dependency array: Fetch when conversation, user, or signalStore changes
+  }, [selectedConversation?.id, currentUser?.id, signalStore]); // Added signalStore
 
   // 4. Scroll to bottom when messages change
   useEffect(() => {
@@ -314,6 +715,34 @@ export default function ChatPage() {
     const handleNewMessage = async (payload) => {
       console.log("[Realtime] handleNewMessage triggered:", payload);
 
+      // Fetch sender profile for the new message
+      console.log("[Realtime] Raw payload.new object:", payload.new); // Log payload.new
+
+      // --- Defensively check payload structure --- START
+      if (
+        !payload ||
+        !payload.new ||
+        payload.new.profile_id === undefined ||
+        payload.new.conversation_id === undefined ||
+        !payload.new.body // Add check for body presence
+      ) {
+        console.error(
+          "[Realtime] Invalid or incomplete payload structure received:",
+          payload
+        );
+        return;
+      }
+      // --- Defensively check payload structure --- END
+
+      // --- Ignore messages sent by the current user --- //
+      if (payload.new.profile_id === currentUser?.id) {
+        console.log(
+          "[Realtime] Ignoring own message received via subscription."
+        );
+        return;
+      }
+      // --- End Ignore --- //
+
       // Check if it belongs to the current conversation (extra safety)
       if (payload.new.conversation_id !== selectedConversation.id) {
         console.log(
@@ -329,7 +758,6 @@ export default function ChatPage() {
       }
 
       // Fetch sender profile for the new message
-      // Note: This adds an extra fetch per message. For high traffic, consider including profile data in the payload or using DB functions.
       const { data: senderProfile, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name, username, avatar_url")
@@ -342,12 +770,87 @@ export default function ChatPage() {
         return;
       }
 
-      console.log("[Realtime] Fetched sender profile:", senderProfile);
+      console.log(`[Realtime] Fetched sender profile:`, senderProfile);
 
-      const formatted = formatMessage({
-        ...payload.new,
-        profiles: senderProfile,
-      });
+      // Assume payload.new.body is \x... hex string from Supabase
+      const dbHexString = payload.new.body;
+      console.log(
+        `[Realtime] Received payload.new.body (expected \\x... string):`,
+        typeof dbHexString === "string"
+          ? dbHexString.substring(0, 50) + "..."
+          : dbHexString
+      );
+
+      // Convert \x... hex string to Uint8Array for decryptMessage
+      let bodyUint8Array;
+      try {
+        bodyUint8Array = hexToUint8Array(dbHexString);
+      } catch (conversionError) {
+        console.error(
+          `[Realtime] Failed to convert received hex string body to Uint8Array for msg ${payload.new.id}:`,
+          conversionError
+        );
+        return; // Skip processing
+      }
+
+      // ─── DEBUG: what are we about to decrypt? ───────────────────────────
+      const rawRX = bodyUint8Array; // Already have this from hexToUint8Array
+      try {
+        console.log(
+          `[DBG-RX] about-to-decrypt (Realtime) type=${payload.new.type}  len=${rawRX.byteLength}`,
+          `sha256=${await crypto.subtle
+            .digest("SHA-256", rawRX)
+            .then((buf) =>
+              [...new Uint8Array(buf)]
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("")
+            )}`,
+          `(msgId: ${payload.new.id})` // Include the actual message ID
+        );
+      } catch (dbgError) {
+        console.error(
+          "[DBG-RX] Error logging debug info (Realtime):",
+          dbgError
+        );
+      }
+      // ─── END DEBUG ───────────────────────────────────────────────────────────
+
+      const ciphertextForDecryption = {
+        type: payload.new.type,
+        body: bodyUint8Array, // Pass Uint8Array
+      };
+
+      console.log(
+        `[Realtime] Passing ciphertext object to decryptMessage for msg ${payload.new.id}:`,
+        ciphertextForDecryption // Logging the object which now contains Uint8Array
+      );
+
+      const plaintextBuffer = await decryptMessage(
+        signalStore,
+        currentUser.id, // Recipient
+        payload.new.profile_id, // Sender
+        1, // Sender device ID (assuming 1)
+        ciphertextForDecryption // Pass object with Uint8Array body
+      );
+
+      if (!plaintextBuffer) {
+        console.warn(
+          `[Realtime] Decryption returned null for msg ${payload.new.id}. Skipping.`
+        );
+        return; // Skip if decryption failed or returned null
+      }
+      const plaintext = arrayBufferToString(plaintextBuffer); // Convert result to string
+
+      // 3) substitute decrypted text into UI object
+      const formatted = {
+        id: payload.new.id,
+        senderId: senderProfile.id,
+        senderName: senderProfile.full_name || senderProfile.username,
+        senderAvatar: senderProfile.avatar_url,
+        content: plaintext,
+        timestamp: new Date(payload.new.created_at).toLocaleTimeString(),
+        isSelf: senderProfile.id === currentUser.id,
+      };
       if (formatted) {
         console.log("[Realtime] Adding formatted message to state:", formatted);
         setMessages((prevMessages) => [...prevMessages, formatted]);
@@ -405,7 +908,13 @@ export default function ChatPage() {
   );
 
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !selectedConversation || !currentUser) return;
+    if (
+      !newMessage.trim() ||
+      !selectedConversation ||
+      !currentUser ||
+      !signalStore
+    )
+      return;
 
     const content = newMessage.trim();
     const conversationId = selectedConversation.id;
@@ -418,31 +927,346 @@ export default function ChatPage() {
     setNewMessage("");
 
     try {
-      const { data: insertedData, error: insertError } = await supabase
-        .from("messages")
-        .insert({
-          conversation_id: conversationId,
-          profile_id: profileId,
-          content: content,
-        })
-        .select(); // Select the inserted row data
+      // --- Make sure we have a session with the peer before encrypting ---
+      const peer = selectedConversation.participants.find(
+        (p) => p.id !== profileId
+      );
+      const addr = new SignalProtocolAddress(peer.id, 1);
+      const have = await signalStore.loadSession(addr.toString());
 
-      if (insertError) {
-        // Log error specifically
-        console.error("[SendMessage] Error sending message:", insertError);
-        setError(`Failed to send message: ${insertError.message}`);
-      } else {
-        // Log success
+      if (!have) {
         console.log(
-          "[SendMessage] Message insert successful, data:",
+          "[SendMessage] No session found, fetching bundle and building..."
+        );
+        const bundleData = await get(`/api/signal/bundle/${peer.id}`);
+
+        if (!bundleData) {
+          throw new Error(`Failed to fetch pre-key bundle for peer ${peer.id}`);
+        }
+
+        // Validate required fields in bundleData
+        if (
+          bundleData.registrationId === undefined ||
+          !bundleData.identityKey ||
+          bundleData.signedPreKeyId === undefined ||
+          !bundleData.signedPreKeyPublicKey ||
+          !bundleData.signedPreKeySignature ||
+          bundleData.preKeyId === undefined ||
+          !bundleData.preKeyPublicKey
+        ) {
+          console.error(
+            "[SendMessage] Incomplete pre-key bundle received:",
+            bundleData
+          );
+          throw new Error("Received incomplete pre-key bundle from server.");
+        }
+
+        const identityKeyBuffer = base64ToArrayBuffer(bundleData.identityKey);
+        const signedPreKeyPublicKeyBuffer = base64ToArrayBuffer(
+          bundleData.signedPreKeyPublicKey
+        );
+        const signedPreKeySignatureBuffer = base64ToArrayBuffer(
+          bundleData.signedPreKeySignature
+        );
+        const preKeyPublicKeyBuffer = base64ToArrayBuffer(
+          bundleData.preKeyPublicKey
+        );
+
+        // Validate conversions
+        if (
+          !identityKeyBuffer ||
+          !signedPreKeyPublicKeyBuffer ||
+          !signedPreKeySignatureBuffer ||
+          !preKeyPublicKeyBuffer
+        ) {
+          console.error(
+            "[SendMessage] Failed to convert one or more bundle keys from Base64:",
+            bundleData
+          );
+          throw new Error("Failed to process pre-key bundle data.");
+        }
+
+        const preKeyBundle = {
+          registrationId: bundleData.registrationId,
+          identityKey: identityKeyBuffer,
+          signedPreKey: {
+            keyId: bundleData.signedPreKeyId,
+            publicKey: signedPreKeyPublicKeyBuffer,
+            signature: signedPreKeySignatureBuffer,
+          },
+          preKey: {
+            keyId: bundleData.preKeyId,
+            publicKey: preKeyPublicKeyBuffer,
+          },
+        };
+
+        await buildSession(signalStore, peer.id, 1, preKeyBundle);
+        console.log("[SendMessage] → fresh session built for peer");
+      }
+      // --------------------------------------------------------------------
+
+      // Wrap encryption and send in a try/catch for identity key errors
+      try {
+        // 1) Convert string to Uint8Array and encrypt locally
+        const plaintextBytes = new TextEncoder().encode(content);
+        let ct = await encryptMessage(
+          signalStore,
+          peer.id,
+          1,
+          plaintextBytes.buffer
+        );
+        console.log(
+          "[SendMessage] Initial encryption done (Type:",
+          ct.type,
+          "Body Length:",
+          ct.body?.length || 0,
+          ")"
+        );
+
+        // Prepare data for DB insertion
+        const bodyUint8Array = Uint8Array.from(ct.body, (c) => c.charCodeAt(0));
+        const hexBody = buf2hex(bodyUint8Array);
+        const pgByteaLiteral = `\\x${hexBody}`;
+
+        // 🟢 HASH LOGGING (TX side) ... // Keep existing A, B, C logs
+        const binBody = ct.body;
+        try {
+          await crypto.subtle
+            .digest(
+              "SHA-256",
+              Uint8Array.from(binBody, (c) => c.charCodeAt(0))
+            )
+            .then((h) => console.log("[TX-A  SHA256]:", buf2hex(h)));
+        } catch (e) {
+          console.error("TX-A Hash Error:", e);
+        }
+        try {
+          await crypto.subtle
+            .digest("SHA-256", bodyUint8Array)
+            .then((h) => console.log("[TX-B  SHA256]:", buf2hex(h)));
+        } catch (e) {
+          console.error("TX-B Hash Error:", e);
+        }
+        try {
+          const testRound = hexToUint8Array(pgByteaLiteral);
+          await crypto.subtle
+            .digest("SHA-256", testRound)
+            .then((h) => console.log("[TX-C  SHA256]:", buf2hex(h)));
+        } catch (e) {
+          console.error("TX-C Hash Error:", e);
+        }
+        // 🟢 END HASH LOGGING
+
+        // Insert into DB
+        const { data: insertedData, error: insertError } = await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conversationId,
+            profile_id: profileId,
+            type: ct.type,
+            body: pgByteaLiteral,
+          })
+          .select();
+
+        if (insertError) throw insertError; // Let the outer catch handle DB errors initially
+
+        console.log(
+          "[SendMessage] Message insert successful after initial attempt.",
           insertedData
         );
-        setError(null); // Clear previous errors on success
-        // Real-time should handle adding it to the list, so no setMessages here needed usually
+        // Handle successful UI update (copied from outer scope)
+        setError(null);
+        const newMessageForUI = {
+          id: insertedData[0].id,
+          senderId: profileId,
+          senderName: profile?.full_name || profile?.username || "Me",
+          senderAvatar: profile?.avatar_url,
+          content: content,
+          timestamp: new Date(insertedData[0].created_at).toLocaleTimeString(
+            [],
+            {
+              hour: "2-digit",
+              minute: "2-digit",
+            }
+          ),
+          isSelf: true,
+        };
+        setMessages((prevMessages) => [...prevMessages, newMessageForUI]);
+        await cacheSentMessage({ ...newMessageForUI, conversationId });
+      } catch (err) {
+        // Check for the specific identity key changed error
+        if (
+          err instanceof Error &&
+          err.message?.includes("Identity key changed")
+        ) {
+          console.warn(
+            "[SendMessage] Peer identity changed – wiping session & identity, rebuilding, and retrying send..."
+          );
+
+          const addr = new SignalProtocolAddress(peer.id, 1);
+          const addrString = addr.toString();
+
+          try {
+            // Ditch old session and identity
+            await signalStore.removeSession(addrString);
+            await signalStore.removeIdentity(addrString);
+            console.log(
+              `[SendMessage] Removed session and identity for ${addrString}`
+            );
+
+            // Fetch fresh bundle
+            console.log(
+              `[SendMessage] Fetching fresh bundle for ${peer.id}...`
+            );
+            const bundleData = await get(`/api/signal/bundle/${peer.id}`);
+            if (!bundleData) {
+              throw new Error(
+                `Retry failed: Could not fetch fresh bundle for peer ${peer.id}`
+              );
+            }
+            console.log(`[SendMessage] Fetched fresh bundle.`);
+
+            // Convert bundle data to PreKeyBundle format (inline toPreKeyBundle logic)
+            const identityKeyBuffer = base64ToArrayBuffer(
+              bundleData.identityKey
+            );
+            const signedPreKeyPublicKeyBuffer = base64ToArrayBuffer(
+              bundleData.signedPreKeyPublicKey
+            );
+            const signedPreKeySignatureBuffer = base64ToArrayBuffer(
+              bundleData.signedPreKeySignature
+            );
+            const preKeyPublicKeyBuffer = base64ToArrayBuffer(
+              bundleData.preKeyPublicKey
+            );
+
+            if (
+              !identityKeyBuffer ||
+              !signedPreKeyPublicKeyBuffer ||
+              !signedPreKeySignatureBuffer ||
+              !preKeyPublicKeyBuffer
+            ) {
+              throw new Error(
+                "Retry failed: Failed to convert keys/signatures from Base64 in the fresh bundle."
+              );
+            }
+
+            const preKeyBundle = {
+              registrationId: bundleData.registrationId,
+              identityKey: identityKeyBuffer,
+              signedPreKey: {
+                keyId: bundleData.signedPreKeyId,
+                publicKey: signedPreKeyPublicKeyBuffer,
+                signature: signedPreKeySignatureBuffer,
+              },
+              preKey: {
+                keyId: bundleData.preKeyId,
+                publicKey: preKeyPublicKeyBuffer,
+              },
+            };
+
+            // Build brand-new session
+            console.log(
+              `[SendMessage] Building fresh session with ${addrString}...`
+            );
+            await buildSession(signalStore, peer.id, 1, preKeyBundle);
+            console.log(`[SendMessage] Fresh session built.`);
+
+            // --- 🔁 RETRY the send once ---
+            console.log("[SendMessage] Retrying encryption...");
+            const plaintextBytesRetry = new TextEncoder().encode(content);
+            const ctRetry = await encryptMessage(
+              signalStore,
+              peer.id,
+              1,
+              plaintextBytesRetry.buffer
+            );
+            console.log(
+              "[SendMessage] Retry encryption done (Type:",
+              ctRetry.type,
+              "Body Length:",
+              ctRetry.body?.length || 0,
+              ")"
+            );
+
+            // Prepare data for DB insertion (Retry)
+            const bodyUint8ArrayRetry = Uint8Array.from(ctRetry.body, (c) =>
+              c.charCodeAt(0)
+            );
+            const hexBodyRetry = buf2hex(bodyUint8ArrayRetry);
+            const pgByteaLiteralRetry = `\\x${hexBodyRetry}`;
+
+            // TODO: Maybe add retry hash logs if needed?
+
+            // Insert into DB (Retry)
+            console.log("[SendMessage] Retrying database insert...");
+            const { data: insertedDataRetry, error: insertErrorRetry } =
+              await supabase
+                .from("messages")
+                .insert({
+                  conversation_id: conversationId,
+                  profile_id: profileId,
+                  type: ctRetry.type,
+                  body: pgByteaLiteralRetry,
+                })
+                .select();
+
+            if (insertErrorRetry) {
+              console.error(
+                "[SendMessage] Database insert failed on retry:",
+                insertErrorRetry
+              );
+              throw insertErrorRetry; // Throw retry error
+            }
+
+            console.log(
+              "[SendMessage] Message insert successful after retry.",
+              insertedDataRetry
+            );
+            // Handle successful UI update (Retry - copied again)
+            setError(null);
+            const newMessageForUIRetry = {
+              id: insertedDataRetry[0].id,
+              senderId: profileId,
+              senderName: profile?.full_name || profile?.username || "Me",
+              senderAvatar: profile?.avatar_url,
+              content: content,
+              timestamp: new Date(
+                insertedDataRetry[0].created_at
+              ).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+              isSelf: true,
+            };
+            setMessages((prevMessages) => [
+              ...prevMessages,
+              newMessageForUIRetry,
+            ]);
+            await cacheSentMessage({ ...newMessageForUIRetry, conversationId });
+          } catch (retryError) {
+            console.error(
+              "[SendMessage] Error during identity change handling/retry:",
+              retryError
+            );
+            setError(
+              `Failed to send message after identity change: ${retryError.message}`
+            );
+            // Don't re-throw here, error is handled
+          }
+        } else {
+          // Re-throw other errors (not identity key changed)
+          console.error(
+            "[SendMessage] Non-identity error during encryption/send:",
+            err
+          );
+          throw err;
+        }
       }
     } catch (err) {
-      console.error("[SendMessage] Unexpected error sending message:", err);
-      setError("An unexpected error occurred while sending.");
+      // Catch errors from the initial setup OR re-thrown errors from the inner catch
+      console.error("[SendMessage] Final catch block error:", err);
+      setError(`Failed to send message: ${err.message}`);
     }
   };
 
@@ -938,13 +1762,13 @@ export default function ChatPage() {
               disabled={!selectedConversation || loadingConversations}
             />
             <Button
-             type="button"
-             variant="ghost"
-             size="icon"
-             onClick={() => setShowEmojiPicker((prev) => !prev)}
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowEmojiPicker((prev) => !prev)}
             >
-            😀
-          </Button>
+              😀
+            </Button>
             <Button
               type="submit"
               size="icon"
@@ -959,14 +1783,14 @@ export default function ChatPage() {
             </Button>
           </form>
           {showEmojiPicker && (
-  <div className="absolute bottom-24 right-8 z-50">
-    <EmojiPicker
-      onEmojiClick={(emojiData) => {
-        setNewMessage((prev) => prev + emojiData.emoji);
-      }}
-    />
-  </div>
-)}
+            <div className="absolute bottom-24 right-8 z-50">
+              <EmojiPicker
+                onEmojiClick={(emojiData) => {
+                  setNewMessage((prev) => prev + emojiData.emoji);
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

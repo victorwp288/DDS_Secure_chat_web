@@ -15,25 +15,11 @@ import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { supabase } from "../lib/supabaseClient";
 import { signalStore } from "../lib/localDb";
-
-// --- Base64 Helpers (Needed for decoding API response) ---
-function base64ToArrayBuffer(base64) {
-  const binary_string = atob(base64);
-  const len = binary_string.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary_string.charCodeAt(i);
-  }
-  return bytes.buffer; // Return ArrayBuffer
-}
-
-function decodeKeyPair(keyPairBase64) {
-  return {
-    publicKey: base64ToArrayBuffer(keyPairBase64.publicKey),
-    privateKey: base64ToArrayBuffer(keyPairBase64.privateKey),
-  };
-}
-// --- End Helpers ---
+import {
+  initializeSignalProtocol,
+  arrayBufferToBase64,
+} from "../lib/signalUtils";
+import { post } from "../lib/backend";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -109,9 +95,9 @@ export default function SignupPage() {
 
       console.log(`Checking for existing key bundle for user ${newUser.id}...`);
       const { data: existingKeys, error: keyCheckError } = await supabase
-        .from("encryption_keys")
-        .select("profile_id")
-        .eq("profile_id", newUser.id)
+        .from("prekey_bundles")
+        .select("user_id")
+        .eq("user_id", newUser.id)
         .maybeSingle();
 
       if (keyCheckError) {
@@ -123,101 +109,73 @@ export default function SignupPage() {
 
       if (!existingKeys) {
         console.log(
-          `No existing keys found. Generating Signal keys via API for user ${newUser.id}...`
+          `No existing keys found. Generating Signal keys locally for user ${newUser.id}...`
         );
 
-        // Fetch keys from the API endpoint
-        const response = await fetch("/api/signal/generate-keys", {
-          method: "POST",
-        });
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error("API Error generating keys:", errorData);
-          throw new Error(
-            `API Error: ${errorData.message || "Failed to generate keys"}`
-          );
-        }
-        const apiResponse = await response.json();
-        console.log(`Signal keys received from API for user ${newUser.id}.`);
-
-        console.log(`Storing local keys for user ${newUser.id}...`);
-        // Decode and store keys using signalStore
-        const decodedIdentityKeyPair = decodeKeyPair(
-          apiResponse.identityKeyPair
-        );
-        await signalStore.storeIdentityKeyPair(decodedIdentityKeyPair);
-
-        await signalStore.storeLocalRegistrationId(apiResponse.registrationId);
-
-        const decodedSignedPreKey = decodeKeyPair(
-          apiResponse.signedPreKey.keyPair
-        );
-        await signalStore.storeSignedPreKey(
-          apiResponse.signedPreKey.keyId,
-          decodedSignedPreKey
-        );
-
-        for (const preKey of apiResponse.preKeys) {
-          const decodedPreKeyPair = decodeKeyPair(preKey.keyPair);
-          await signalStore.storePreKey(preKey.keyId, decodedPreKeyPair);
-        }
-        console.log(`Local keys stored successfully for user ${newUser.id}.`);
-
-        // --- Store Public Bundle via API ---
+        // --- Generate Keys Locally using libsignal AND Store Bundle --- //
         try {
+          // 1. Generate/Store keys locally
+          console.log(
+            `Generating Signal keys locally for user ${newUser.id}...`
+          );
+          const publicBundleComponents = await initializeSignalProtocol(
+            signalStore
+          );
+          console.log(
+            `Local Signal keys generated and stored via signalStore for user ${newUser.id}.`
+          );
+
+          // 2. Prepare bundle for API
           console.log(`Preparing public bundle for user ${newUser.id}...`);
-          // Choose one pre-key to publish (e.g., the first one)
-          const preKeyToPublish = apiResponse.preKeys[0];
+          const preKeyToPublish = publicBundleComponents.preKeys[0];
           if (!preKeyToPublish) {
             throw new Error(
-              "No pre-keys available in API response to publish."
+              "No pre-keys available in generated bundle to publish."
             );
           }
-
           const bundlePayload = {
             userId: newUser.id,
-            registrationId: apiResponse.registrationId,
-            identityKey: apiResponse.identityKeyPair.publicKey, // Base64
-            signedPreKeyId: apiResponse.signedPreKey.keyId,
-            signedPreKeyPublicKey: apiResponse.signedPreKey.keyPair.publicKey, // Base64
-            signedPreKeySignature: apiResponse.signedPreKey.signature, // Base64
+            registrationId: publicBundleComponents.registrationId,
+            identityKey: arrayBufferToBase64(
+              publicBundleComponents.identityPubKey
+            ),
+            signedPreKeyId: publicBundleComponents.signedPreKey.keyId,
+            signedPreKeyPublicKey: arrayBufferToBase64(
+              publicBundleComponents.signedPreKey.publicKey
+            ),
+            signedPreKeySignature: arrayBufferToBase64(
+              publicBundleComponents.signedPreKey.signature
+            ),
             preKeyId: preKeyToPublish.keyId,
-            preKeyPublicKey: preKeyToPublish.keyPair.publicKey, // Base64
+            preKeyPublicKey: arrayBufferToBase64(preKeyToPublish.publicKey),
           };
 
+          // 3. Store Public Bundle via API
           console.log(
-            `Calling /api/signal/store-bundle for user ${newUser.id}...`
+            `Calling backend /api/signal/store-bundle for user ${newUser.id}...`
           );
-          const storeResponse = await fetch("/api/signal/store-bundle", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(bundlePayload),
-          });
-
-          if (!storeResponse.ok) {
-            const errorData = await storeResponse.json();
-            console.error("API Error storing bundle:", errorData);
-            // Decide how critical this is. Maybe warn user but proceed?
-            // For now, throw error to make it explicit.
-            throw new Error(
-              `API Error storing bundle: ${
-                errorData.message || "Failed to store public bundle"
-              }`
-            );
-          }
-
+          await post("/api/signal/store-bundle", bundlePayload);
           console.log(
             `Public bundle stored successfully via API for user ${newUser.id}.`
           );
-        } catch (bundleError) {
-          console.error("Failed to store public pre-key bundle:", bundleError);
-          // Handle this error - maybe alert the user that setup is incomplete?
-          // Throwing it will display a generic message via the outer catch.
-          throw new Error(
-            `Failed to complete key setup: ${bundleError.message}`
+
+          // 4. Navigate ONLY if all steps succeeded
+          console.log("Signup and key setup complete. Navigating to chat...");
+          navigate("/chat");
+        } catch (processError) {
+          // Catch errors from any step (local gen, bundle prep, API call)
+          console.error(
+            "Error during Signal key generation or bundle storage:",
+            processError
           );
+          setError(
+            `Account created, but failed during security key setup: ${processError.message}. Please try logging in again or contact support.`
+          );
+          // Sign out user to prevent inconsistent state
+          await supabase.auth.signOut();
+          // No navigation happens here
         }
-        // --- End Store Public Bundle ---
+        // --- End Key Generation/Bundle Storage Logic --- //
 
         // Check if user needs email confirmation
         if (
@@ -240,12 +198,17 @@ export default function SignupPage() {
           );
         }
       } else {
+        // This block handles the case where keys *already* exist
         console.log(
           `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
         );
+        // If keys exist, the user should be okay to proceed
+        console.log("Existing keys found. Navigating to chat...");
+        navigate("/chat");
       }
     } catch (err) {
-      console.error("Error during sign up process:", err);
+      // This outer catch handles errors from Supabase signup or profile upsert primarily
+      console.error("Error during sign up process (before key gen):", err);
       if (!error) {
         // Avoid overwriting specific errors like 'email exists'
         setError(`Signup failed: ${err.message || "Please try again."}`);

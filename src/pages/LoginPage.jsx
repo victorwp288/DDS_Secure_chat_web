@@ -37,15 +37,21 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password,
-      });
+      const { data, error: signInError } =
+        await supabase.auth.signInWithPassword({
+          email: email,
+          password: password,
+        });
 
       if (signInError) {
         setError(signInError.message);
-      } else {
+      } else if (data.session) {
+        console.log("Login successful, user:", data.session.user);
+        console.log("Navigating to chat...");
         navigate("/chat");
+      } else {
+        console.error("Login response did not include a session");
+        setError("An unexpected error occurred. Please try again.");
       }
     } catch (err) {
       console.error("Unexpected error during login:", err);
