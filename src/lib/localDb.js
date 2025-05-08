@@ -280,16 +280,28 @@ export class IndexedDBStore {
     return trustedB64 === identityKeyB64;
   }
   async loadPreKey(keyId) {
-    console.log(`[DB Store] loadPreKey called for key ID: ${keyId}`);
+    console.log(
+      `[DB Store] loadPreKey called for key ID: ${keyId} (Type: ${typeof keyId})`
+    ); // Log key + type
+    const requestedKeyId = Number(keyId); // Ensure we query with number
+    console.log(
+      `[DB Store] loadPreKey requesting numeric key: ${requestedKeyId}`
+    );
     const keyPair = await performDbOperation(
       PREKEY_STORE_NAME,
       "readonly",
-      (store) => store.get(Number(keyId))
+      (store) => store.get(requestedKeyId) // Use numeric key
     );
+    console.log(
+      `[DB Store] loadPreKey Raw result for ${requestedKeyId}:`,
+      keyPair
+    ); // Log raw result
     if (!keyPair) {
-      console.warn(`[DB Store] loadPreKey: Key ID ${keyId} not found.`);
+      console.warn(
+        `[DB Store] loadPreKey: Key ID ${requestedKeyId} not found.`
+      );
     } else {
-      console.log(`[DB Store] loadPreKey: Found key for ID ${keyId}.`);
+      console.log(`[DB Store] loadPreKey: Found key for ID ${requestedKeyId}.`);
     }
     return keyPair ? deserializeBuffers(keyPair) : undefined;
   }
@@ -312,16 +324,30 @@ export class IndexedDBStore {
     return session ? deserializeBuffers(session) : undefined; // Re-enable deserialization
   }
   async loadSignedPreKey(keyId) {
-    console.log(`[DB Store] loadSignedPreKey called for key ID: ${keyId}`);
+    console.log(
+      `[DB Store] loadSignedPreKey called for key ID: ${keyId} (Type: ${typeof keyId})`
+    ); // Log key + type
+    const requestedKeyId = Number(keyId); // Ensure we query with number
+    console.log(
+      `[DB Store] loadSignedPreKey requesting numeric key: ${requestedKeyId}`
+    );
     const keyPair = await performDbOperation(
       SIGNED_PREKEY_STORE_NAME,
       "readonly",
-      (store) => store.get(keyId)
+      (store) => store.get(requestedKeyId) // Retrieve using Number(keyId)
     );
+    console.log(
+      `[DB Store] loadSignedPreKey Raw result for ${requestedKeyId}:`,
+      keyPair
+    ); // Log raw result
     if (!keyPair) {
-      console.warn(`[DB Store] loadSignedPreKey: Key ID ${keyId} not found.`);
+      console.warn(
+        `[DB Store] loadSignedPreKey: Key ID ${requestedKeyId} not found.`
+      );
     } else {
-      console.log(`[DB Store] loadSignedPreKey: Found key for ID ${keyId}.`);
+      console.log(
+        `[DB Store] loadSignedPreKey: Found key for ID ${requestedKeyId}.`
+      );
     }
     return keyPair ? deserializeBuffers(keyPair) : undefined;
   }
@@ -374,7 +400,7 @@ export class IndexedDBStore {
     console.log(`IndexedDBStore: storeSignedPreKey for ${keyId}`);
     const serializableKey = serializeBuffers(signedPreKey);
     return performDbOperation(SIGNED_PREKEY_STORE_NAME, "readwrite", (store) =>
-      store.put(serializableKey, keyId)
+      store.put(serializableKey, Number(keyId))
     );
   }
   async saveIdentity(identifier, identityKey) {

@@ -16,15 +16,6 @@ db.version(2)
     console.log("Upgrading Dexie schema to version 2 (added content field)");
   });
 
-// Re-declare version 1 just in case upgrade logic needs it or for clarity
-db.version(1).stores({
-  // Using 'id' as the primary key (unique message UUID from Supabase)
-  // Indexing 'conversationId' for fast lookups per chat
-  // Indexing 'timestamp' for sorting
-  messages: "id, conversationId, timestamp",
-  // You might add other tables later (e.g., conversations, userSettings)
-});
-
 // Example usage (can add helper functions here later if needed)
 // export async function addMessage(message) {
 //   await db.messages.put(message); // put handles add or update
@@ -45,7 +36,16 @@ export async function cacheSentMessage(message) {
     `[Dexie Cache] Caching sent message ${message.id}:`,
     message.content
   );
-  await db.messages.put(message);
+  try {
+    const putKey = await db.messages.put(message);
+    console.log(
+      `[Dexie Cache] Successfully put message ${message.id} with key:`,
+      putKey
+    );
+  } catch (error) {
+    console.error(`[Dexie Cache] Error putting message ${message.id}:`, error);
+    // Optionally re-throw or handle as needed
+  }
 }
 
 // Helper function to get cached message plaintext

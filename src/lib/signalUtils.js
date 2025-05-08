@@ -30,72 +30,109 @@ import {
  * @typedef {import('@privacyresearch/libsignal-protocol-typescript').MessageType} MessageType
  */
 
-/**
- * Generates a random key ID.
- * Note: In a real application, ensure these IDs are unique and managed appropriately.
- * @returns {number} A random integer for use as a key ID.
- */
-const generateKeyId = () => Math.floor(9999 * Math.random()) + 1; // Ensure ID >= 1
+// --- Add bufToB64 helper ---
+function bufToB64(buf) {
+  // Ensure buf is ArrayBuffer
+  if (!(buf instanceof ArrayBuffer)) {
+    console.error("[bufToB64] Input is not ArrayBuffer:", buf);
+    if (buf === null || buf === undefined) return null; // Handle null/undefined gracefully if they sneak in
+    throw new Error("bufToB64: Expected ArrayBuffer input.");
+  }
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+// --- End bufToB64 helper ---
 
 /**
- * Initializes the Signal protocol state for a new user/device.
- * Generates identity keys, registration ID, and pre-keys, storing them in the provided store.
- * @param {SignalProtocolStore} store - The Signal protocol store implementation.
- * @returns {Promise<{registrationId: number, identityPubKey: ArrayBuffer, signedPreKey: import('@privacyresearch/libsignal-protocol-typescript').SignedPublicPreKeyType, preKeys: import('@privacyresearch/libsignal-protocol-typescript').PreKeyType[]}>} The public components of the generated keys needed for the server bundle.
+ * Initializes the Signal protocol state for the current device.
+ * Generates identity keys, registration ID, a signed pre-key, and a one-time pre-key,
+ * storing them in the provided store.
+ * It then returns a bundle formatted for server registration with Base64 encoded keys.
+ * @param {import('@privacyresearch/libsignal-protocol-typescript').SignalProtocolStore} store - The Signal protocol store implementation.
+ * @param {string} userId - The user's identifier, to be included in the returned bundle.
+ * @returns {Promise<{
+ *   userId: string,
+ *   registrationId: number,
+ *   identityKey: string, // Base64 encoded
+ *   signedPreKeyId: number,
+ *   signedPreKeyPublicKey: string, // Base64 encoded
+ *   signedPreKeySignature: string, // Base64 encoded
+ *   preKeyId: number,
+ *   preKeyPublicKey: string // Base64 encoded
+ * }>} An object containing the user ID, registration ID, and Base64 encoded public identity key,
+ *      signed pre-key components, and one-time pre-key components, formatted for the server.
  */
-export const initializeSignalProtocol = async (store) => {
+export const initializeSignalProtocol = async (store, userId) => {
+  if (!userId || typeof userId !== "string" || userId.trim() === "") {
+    console.error(
+      "[initializeSignalProtocol] Invalid or missing userId:",
+      userId
+    );
+    throw new Error("userId must be a non-empty string.");
+  }
+  // Basic check for store
+  if (
+    !store ||
+    typeof store.storeIdentityKeyPair !== "function" ||
+    typeof store.storeLocalRegistrationId !== "function" ||
+    typeof store.storeSignedPreKey !== "function" ||
+    typeof store.storePreKey !== "function"
+  ) {
+    console.error(
+      "[initializeSignalProtocol] Invalid store object provided:",
+      store
+    );
+    throw new Error("Invalid or incomplete store object provided.");
+  }
+
+  // ❶ identity & registration
+  const identity = await KeyHelper.generateIdentityKeyPair();
   const registrationId = KeyHelper.generateRegistrationId();
+
+  await store.storeIdentityKeyPair(identity);
   await store.storeLocalRegistrationId(registrationId);
 
-  const identityKeyPair = await KeyHelper.generateIdentityKeyPair();
-  await store.storeIdentityKeyPair(identityKeyPair);
-
-  // --- Add diagnostic assertion --- START ---
-  const check = await store.getIdentityKeyPair();
-  console.assert(
-    check?.pubKey?.byteLength === 33 && check?.privKey?.byteLength === 32, // Ed25519 keys
-    "[Signal Init] Identity key check failed immediately after storing!",
-    check
-  );
-  // --- Add diagnostic assertion --- END ---
-
-  // Generate multiple pre-keys (e.g., 100) as recommended by the protocol
-  const preKeys = [];
-  const preKeyPromises = [];
-  for (let i = 0; i < 10; i++) {
-    // Reduced for simplicity, use more (e.g., 100) in production
-    const preKeyId = generateKeyId();
-    preKeyPromises.push(
-      KeyHelper.generatePreKey(preKeyId).then((preKey) => {
-        preKeys.push({ keyId: preKey.keyId, publicKey: preKey.keyPair.pubKey });
-        return store.storePreKey(`${preKey.keyId}`, preKey.keyPair);
-      })
-    );
-  }
-  await Promise.all(preKeyPromises);
-
-  const signedPreKeyId = generateKeyId();
+  // ❷ signed-pre-key
+  // Use a seed for the ID; the library returns the actual ID in the generated object.
+  // Max value for signedPreKeyId is 2147483647 (2^31 - 1).
+  const signedPreKeyIdSeed = Math.floor(Math.random() * (2 ** 31 - 2)) + 1; // Range: 1 to 2^31 - 2
   const signedPreKey = await KeyHelper.generateSignedPreKey(
-    identityKeyPair,
-    signedPreKeyId
+    identity,
+    signedPreKeyIdSeed
   );
-  await store.storeSignedPreKey(signedPreKeyId, signedPreKey.keyPair);
+  // signedPreKey is { keyId: number, keyPair: KeyPairType, signature: ArrayBuffer }
+  // Store using the keyId from the signedPreKey object and its keyPair.
+  console.log(`[SignalUtils] Storing SignedPreKey ID: ${signedPreKey.keyId}`);
+  await store.storeSignedPreKey(signedPreKey.keyId, signedPreKey.keyPair);
+  console.log(`[SignalUtils] Stored SignedPreKey ID: ${signedPreKey.keyId}`);
 
-  const publicSignedPreKey = {
-    keyId: signedPreKeyId,
-    publicKey: signedPreKey.keyPair.pubKey,
-    signature: signedPreKey.signature,
-  };
+  // ❸ first one-time pre-key
+  // Max value for preKeyId for libsignal-protocol-typescript is 16777215 (0xFFFFFF).
+  const preKeyIdSeed = Math.floor(Math.random() * 16777214) + 1; // Range: 1 to 2^24 - 2
+  const preKey = await KeyHelper.generatePreKey(preKeyIdSeed);
+  // preKey is { keyId: number, keyPair: KeyPairType }
+  // Store using the keyId from the preKey object (as a string) and its keyPair.
+  console.log(`[SignalUtils] Storing PreKey ID: ${preKey.keyId}`);
+  await store.storePreKey(preKey.keyId, preKey.keyPair);
+  console.log(`[SignalUtils] Stored PreKey ID: ${preKey.keyId}`);
 
-  console.log("Signal Protocol Initialized");
+  console.log(
+    `[SignalUtils] Initialized Signal protocol for user ${userId}. RegID: ${registrationId}, SignedPKID: ${signedPreKey.keyId}, PreKeyID: ${preKey.keyId}`
+  );
 
-  // Return the public parts needed for the directory/server bundle
-  return {
+  // ❹ build bundle in **Base-64**
+  const bundle = {
+    userId,
     registrationId,
-    identityPubKey: identityKeyPair.pubKey,
-    signedPreKey: publicSignedPreKey,
-    preKeys: preKeys, // Only returning a subset for registration, store handles all
+    identityKey: bufToB64(identity.pubKey),
+    signedPreKeyId: signedPreKey.keyId, // Use the keyId from the generated object
+    signedPreKeyPublicKey: bufToB64(signedPreKey.keyPair.pubKey),
+    signedPreKeySignature: bufToB64(signedPreKey.signature),
+    preKeyId: preKey.keyId, // Use the keyId from the generated object
+    preKeyPublicKey: bufToB64(preKey.keyPair.pubKey),
   };
+
+  // console.log("[SignalUtils] Generated bundle for server:", JSON.stringify(bundle, (k,v) => typeof v === 'string' && v.length > 30 ? v.substring(0,30) + '...' : v, 2));
+  return bundle;
 };
 
 /**
@@ -144,7 +181,6 @@ export const encryptMessage = async (
   const recipientAddress = new SignalProtocolAddress(recipientId, deviceId);
   const sessionCipher = new SessionCipher(store, recipientAddress);
 
-  // --- Log session state before encryption --- START
   try {
     const session = await store.loadSession(recipientAddress.toString());
     console.log(
@@ -157,7 +193,6 @@ export const encryptMessage = async (
       e
     );
   }
-  // --- Log session state before encryption --- END
 
   console.log(`Encrypting message for ${recipientId}:${deviceId}`);
   try {
@@ -166,15 +201,9 @@ export const encryptMessage = async (
       `Message encrypted (type ${ciphertext.type}) for ${recipientId}:${deviceId}`
     );
 
-    // ─── DEBUG: what did SessionCipher give us? ───────────────────────────────
     if (ciphertext.type === 3) {
-      // Log specifically for PreKeyWhisperMessages
       try {
-        // Convert binary string safely to bytes (1 char -> 1 byte)
         const raw = Uint8Array.from(ciphertext.body, (c) => c.charCodeAt(0));
-        // const raw = typeof ciphertext.body === 'string' // Alternate handling if body could be buffer
-        //                 ? Uint8Array.from(ciphertext.body, c => c.charCodeAt(0))
-        //                 : new Uint8Array(ciphertext.body);
         console.log(
           `[DBG-TX] type=${ciphertext.type}  len=${raw.byteLength}`,
           `sha256=${await crypto.subtle
@@ -189,8 +218,6 @@ export const encryptMessage = async (
         console.error("[DBG-TX] Error logging debug info:", dbgError);
       }
     }
-    // ─── END DEBUG ───────────────────────────────────────────────────────────
-
     return ciphertext;
   } catch (error) {
     console.error("Error encrypting message:", error);
@@ -210,7 +237,7 @@ export const encryptMessage = async (
  */
 export const decryptMessage = async (
   store,
-  recipientId, // Keep for logging context
+  recipientId,
   senderId,
   senderDeviceId,
   ciphertext
@@ -218,17 +245,15 @@ export const decryptMessage = async (
   const senderAddress = new SignalProtocolAddress(senderId, senderDeviceId);
   const sessionCipher = new SessionCipher(store, senderAddress);
   const senderAddressString = senderAddress.toString();
-  // Assuming recipient device ID is always 1 for logging
   const recipientAddressString = new SignalProtocolAddress(
     recipientId,
-    1
+    1 // TODO: This recipient device ID might need to come from context if store is keyed by full address
   ).toString();
 
   console.log(
     `Attempting decryption of message type ${ciphertext.type} from ${senderAddressString} to ${recipientAddressString}`
   );
 
-  // Expect ciphertext.body to be Uint8Array
   const bodyUint8Array = ciphertext.body;
   if (!(bodyUint8Array instanceof Uint8Array)) {
     console.error(
@@ -240,28 +265,22 @@ export const decryptMessage = async (
   try {
     let plaintextBuffer = null;
 
-    // --- 1. PreKey-Whisper (type 3) --- Using .catch for Bad MAC ---
     if (ciphertext.type === 3) {
       console.log(`Processing PreKeyWhisperMessage (Type 3)...`);
       plaintextBuffer = await sessionCipher
-        .decryptPreKeyWhisperMessage(
-          bodyUint8Array.buffer, // ⬅ Pass ArrayBuffer
-          "binary" // ⬅ Add correct encoding type for ArrayBuffer
-        )
+        .decryptPreKeyWhisperMessage(bodyUint8Array.buffer, "binary")
         .catch(async (err) => {
           if (err instanceof Error && err.message?.includes("Bad MAC")) {
             console.warn(
               `Bad MAC error on PreKeyWhisperMessage from ${senderAddressString}. Session likely stale. Wiping session and retrying...`
             );
-            await store.removeSession(senderAddressString); // Use removeSession
+            await store.removeSession(senderAddressString);
             const freshCipher = new SessionCipher(store, senderAddress);
-            // Retry decryption with the fresh cipher
             return freshCipher.decryptPreKeyWhisperMessage(
-              bodyUint8Array.buffer, // Pass ArrayBuffer directly again
-              "binary" // ⬅ Add correct encoding type for ArrayBuffer
+              bodyUint8Array.buffer,
+              "binary"
             );
           } else {
-            // Re-throw errors other than Bad MAC
             console.error(
               `Non-MAC decryption error (PreKeyWhisperMessage) from ${senderAddressString}:`,
               err
@@ -274,35 +293,31 @@ export const decryptMessage = async (
           ? `Successfully processed PreKeyWhisperMessage from ${senderAddressString}`
           : `Failed to process PreKeyWhisperMessage from ${senderAddressString} after potential retry.`
       );
-    }
-    // --- 2. Normal Whisper (type 1) -----------------------------------------
-    else if (ciphertext.type === 1) {
+    } else if (ciphertext.type === 1) {
       console.log(
         `Decrypting WhisperMessage (Type 1) from ${senderAddressString}...`
       );
       try {
         plaintextBuffer = await sessionCipher.decryptWhisperMessage(
-          bodyUint8Array.buffer, // ⬅ Pass ArrayBuffer
-          "binary" // ⬅ Add correct encoding type for ArrayBuffer
+          bodyUint8Array.buffer,
+          "binary"
         );
         console.log(
           `Successfully decrypted WhisperMessage from ${senderAddressString}`
         );
       } catch (e) {
-        // Bad MAC on Type 1 usually indicates out-of-order or state mismatch.
-        // We log it but currently don't attempt automatic recovery like for Type 3.
         if (e instanceof Error && e.message?.includes("Bad MAC")) {
           console.error(
             `🛑 Bad MAC error decrypting WhisperMessage (Type 1) from ${senderAddressString}. This could be due to out-of-order messages or session state mismatch. No automatic retry. Raw error:`,
             e
           );
-          plaintextBuffer = null; // Indicate decryption failure
+          plaintextBuffer = null;
         } else {
           console.error(
             `Non-MAC decryption error (WhisperMessage) from ${senderAddressString}:`,
             e
           );
-          throw e; // Re-throw other errors
+          throw e;
         }
       }
     } else {
@@ -312,12 +327,11 @@ export const decryptMessage = async (
       throw new Error(`Unknown message type: ${ciphertext.type}`);
     }
 
-    // --- Log decrypted plaintext if successful --- START ---
     if (plaintextBuffer) {
       try {
         console.log(
           `📩 Decrypted content from ${senderAddressString}: "`,
-          arrayBufferToString(plaintextBuffer).substring(0, 50) + "...", // Use existing helper
+          arrayBufferToString(plaintextBuffer).substring(0, 50) + "...",
           `"`
         );
       } catch (logError) {
@@ -327,16 +341,13 @@ export const decryptMessage = async (
         );
       }
     }
-    // --- Log decrypted plaintext if successful --- END ---
-
     return plaintextBuffer;
   } catch (error) {
-    // Catch errors from the retry logic or re-thrown errors
     console.error(
       `Decryption failed catastrophically for message from ${senderAddressString}:`,
       error
     );
-    return null; // Indicate decryption failure
+    return null;
   }
 };
 
@@ -359,11 +370,11 @@ export function arrayBufferToBase64(buffer) {
 /**
  * Helper to convert Base64 string back to ArrayBuffer.
  * @param {string} base64
- * @returns {ArrayBuffer}
+ * @returns {ArrayBuffer | null} Null if input is invalid or conversion fails.
  */
 export function base64ToArrayBuffer(base64) {
-  if (!base64) {
-    console.warn("[base64ToArrayBuffer] Received null or empty input.");
+  if (!base64 || typeof base64 !== "string") {
+    console.warn("[base64ToArrayBuffer] Received invalid input:", base64);
     return null;
   }
   try {
@@ -375,7 +386,7 @@ export function base64ToArrayBuffer(base64) {
     }
     return bytes.buffer;
   } catch (error) {
-    console.error("Error converting Base64 to ArrayBuffer:", error);
+    console.error("Error converting Base64 to ArrayBuffer:", base64, error);
     return null;
   }
 }
@@ -410,8 +421,8 @@ export function buf2hex(buffer) {
 }
 
 /**
- * Helper function to convert PostgreSQL bytea hex escape format ('\x...') to a Uint8Array.
- * @param {string | null | undefined} hexString The '\x...' formatted string.
+ * Helper function to convert PostgreSQL bytea hex escape format ('\\x...') to a Uint8Array.
+ * @param {string | null | undefined} hexString The '\\x...' formatted string.
  * @returns {Uint8Array} The resulting Uint8Array.
  * @throws {Error} If the input format is invalid.
  */
@@ -421,7 +432,6 @@ export function hexToUint8Array(hexString) {
     typeof hexString !== "string" ||
     !hexString.startsWith("\\x")
   ) {
-    // Note: In JS string literals, '\\x' becomes \x
     throw new Error(
       `[hexToUint8Array] Invalid or non-hex string format received: ${hexString}`
     );
@@ -452,23 +462,27 @@ export function hexToUint8Array(hexString) {
 
 // --- Add ensureIdentity --- START ---
 import { signalStore } from "./localDb"; // Import the store instance
-import { post } from "./backend"; // Assuming post helper exists for your API
+// Removed: import { post } from "./backend"; // No longer posting from here
 
 /**
  * Ensures that the local Signal identity keys exist in the store.
- * If keys don't exist, it initializes them, stores them, and POSTs
- * the public bundle to the backend API.
+ * If keys don't exist, it initializes them and stores them using the provided userId for context.
+ * This function NO LONGER posts to the backend; that's handled by SignalContext.
+ * @param {string} userId The user's ID, used for context if needed by initializeSignalProtocol.
  * @returns {Promise<import('@privacyresearch/libsignal-protocol-typescript').KeyPairType | undefined>}
  *          The identity key pair, or undefined if initialization failed.
  */
 export async function ensureIdentity(userId) {
-  console.log("[ensureIdentity] Checking for existing identity keys...");
+  // userId is now passed
+  console.log(
+    "[ensureIdentity] Checking for existing identity keys for user:",
+    userId
+  );
   const existingKeyPair = await signalStore.getIdentityKeyPair();
   const existingRegId = await signalStore.getLocalRegistrationId();
 
   if (existingKeyPair && existingRegId) {
     console.log("[ensureIdentity] Identity keys and Reg ID found.");
-    // Add diagnostic log
     console.log(
       "[ensureIdentity] Existing Identity PubKey (first 10 bytes):",
       existingKeyPair.pubKey
@@ -480,14 +494,20 @@ export async function ensureIdentity(userId) {
   }
 
   console.warn(
-    "[ensureIdentity] No local identity/regId found. Generating fresh keys..."
+    "[ensureIdentity] No local identity/regId found. Generating fresh keys for user:",
+    userId
   );
   try {
-    const bundle = await initializeSignalProtocol(signalStore); // This generates and stores keys
-    console.log("[ensureIdentity] New keys generated and stored.");
+    // Call initializeSignalProtocol, which now takes userId and returns the bundle for the server
+    // However, ensureIdentity itself doesn't need the bundle, just ensures keys are in store.
+    // initializeSignalProtocol already stores the keys.
+    await initializeSignalProtocol(signalStore, userId);
+    console.log(
+      "[ensureIdentity] New keys generated and stored by initializeSignalProtocol for user:",
+      userId
+    );
 
-    // Log new keys for comparison
-    const newKeyPair = await signalStore.getIdentityKeyPair();
+    const newKeyPair = await signalStore.getIdentityKeyPair(); // Verify they are stored
     const newRegId = await signalStore.getLocalRegistrationId();
     console.log(
       "[ensureIdentity] New Identity PubKey (first 10 bytes):",
@@ -495,36 +515,74 @@ export async function ensureIdentity(userId) {
     );
     console.log("[ensureIdentity] New Registration ID:", newRegId);
 
-    // Prepare bundle for backend: Convert ArrayBuffers to Base64
-    const serializableBundle = {
-      userId: userId,
-      registrationId: bundle.registrationId,
-      identityKey: arrayBufferToBase64(bundle.identityPubKey),
-      signedPreKeyId: bundle.signedPreKey.keyId,
-      signedPreKeyPublicKey: arrayBufferToBase64(bundle.signedPreKey.publicKey),
-      signedPreKeySignature: arrayBufferToBase64(bundle.signedPreKey.signature),
-      preKeyId: bundle.preKeys[0].keyId,
-      preKeyPublicKey: arrayBufferToBase64(bundle.preKeys[0].publicKey),
-    };
-
-    console.log("[ensureIdentity] Posting serializable bundle to backend:", {
-      registrationId: serializableBundle.registrationId,
-      identityKey: serializableBundle.identityKey?.substring(0, 20) + "...", // Log truncated keys
-      signedPreKeyId: serializableBundle.signedPreKey?.keyId,
-      preKeyId: serializableBundle.preKey?.keyId,
-    });
-
-    // TODO: Replace '/api/signal/register' with your actual backend endpoint
-    await post("/api/signal/store-bundle", serializableBundle);
-    console.log("[ensureIdentity] Bundle successfully posted to backend.");
-
-    // Return the newly generated key pair
-    return newKeyPair; // Should be the same as bundle.identityPubKey + the private key
+    // Removed backend posting from here. SignalContext will handle it.
+    return newKeyPair;
   } catch (error) {
-    console.error("[ensureIdentity] Failed to initialize or post keys:", error);
-    // Depending on the error, you might want to clear the failed attempt
-    // await signalStore.clearAllData(); // Use with caution!
-    return undefined; // Indicate failure
+    console.error("[ensureIdentity] Failed to initialize keys:", error);
+    return undefined;
   }
 }
 // --- Add ensureIdentity --- END ---
+
+/**
+ * Converts an array of pre-key bundle objects from the backend into a Map.
+ * @param {Array<object>} arr - Array of bundle objects from /api/signal/bundles/:userId.
+ * Each object is expected to have deviceId, registrationId, identityKey (Base64),
+ * signedPreKeyId, signedPreKeyPublicKey (Base64), signedPreKeySignature (Base64),
+ * preKeyId, preKeyPublicKey (Base64).
+ * @returns {Map<number, PreKeyBundleType>} A map of deviceId to PreKeyBundle.
+ */
+export function bundlesToMap(arr) {
+  const map = new Map();
+  if (!Array.isArray(arr)) {
+    console.error("[bundlesToMap] Input is not an array:", arr);
+    return map; // Return empty map
+  }
+  for (const b of arr) {
+    // Validate basic structure of b
+    if (b && typeof b.deviceId === "number" && b.identityKey) {
+      // Basic check
+      const identityKeyBuffer = base64ToArrayBuffer(b.identityKey);
+      const signedPreKeyPublicKeyBuffer = base64ToArrayBuffer(
+        b.signedPreKeyPublicKey
+      );
+      const signedPreKeySignatureBuffer = base64ToArrayBuffer(
+        b.signedPreKeySignature
+      );
+      const preKeyPublicKeyBuffer = base64ToArrayBuffer(b.preKeyPublicKey);
+
+      // Check for nulls from base64ToArrayBuffer which indicates conversion failure
+      if (
+        !identityKeyBuffer ||
+        !signedPreKeyPublicKeyBuffer ||
+        !signedPreKeySignatureBuffer ||
+        !preKeyPublicKeyBuffer
+      ) {
+        console.warn(
+          "[bundlesToMap] Failed to convert one or more keys from Base64 for deviceId:",
+          b.deviceId,
+          "Bundle data:",
+          b
+        );
+        continue; // Skip this bundle if any key conversion fails
+      }
+
+      map.set(b.deviceId, {
+        registrationId: b.registrationId,
+        identityKey: identityKeyBuffer,
+        signedPreKey: {
+          keyId: b.signedPreKeyId,
+          publicKey: signedPreKeyPublicKeyBuffer,
+          signature: signedPreKeySignatureBuffer,
+        },
+        preKey: {
+          keyId: b.preKeyId,
+          publicKey: preKeyPublicKeyBuffer,
+        },
+      });
+    } else {
+      console.warn("[bundlesToMap] Skipping invalid bundle object:", b);
+    }
+  }
+  return map;
+}

@@ -10,9 +10,8 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage"; // Import the Forgo
 import ChatPage from "./pages/ChatPage"; // Import the ChatPage
 import CryptoTestPage from "./pages/CryptoTestPage"; // Import the CryptoTestPage
 import AboutPage from "./pages/AboutPage"; // Import the AboutPage
-import { SignalProvider } from "./SignalContext";
 import { supabase } from "./lib/supabaseClient"; // Assuming client is exported as supabase
-import TestPage from "./pages/Test"; // Import the TestPage
+import { SignalProvider } from "./lib/signalContext";
 
 function App() {
   const [session, setSession] = useState(null);
@@ -44,9 +43,8 @@ function App() {
     );
   }
 
-
   return (
-    <SignalProvider>
+    <SignalProvider userId={session?.user?.id}>
       <Router>
         <Routes>
           <Route path="/" element={<HomePage />} />
@@ -58,9 +56,8 @@ function App() {
           {/* <Route path="/forgot-password" element={<ForgotPasswordPage />} /> No need if logged in */}
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/signup" element={<SignupPage />} />
-		  <Route path="/login" element={<LoginPage />} />
+          <Route path="/login" element={<LoginPage />} />
           <Route path="/about" element={<AboutPage />} />
-          <Route path="/test" element={<TestPage />} />
         </Routes>
       </Router>
     </SignalProvider>

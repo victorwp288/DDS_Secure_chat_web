@@ -14,12 +14,6 @@ import {
 import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { supabase } from "../lib/supabaseClient";
-import { signalStore } from "../lib/localDb";
-import {
-  initializeSignalProtocol,
-  arrayBufferToBase64,
-} from "../lib/signalUtils";
-import { post } from "../lib/backend";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -109,73 +103,8 @@ export default function SignupPage() {
 
       if (!existingKeys) {
         console.log(
-          `No existing keys found. Generating Signal keys locally for user ${newUser.id}...`
+          `No existing keys found. User ${newUser.id} will register keys via SignalProvider on chat page load.`
         );
-
-        // --- Generate Keys Locally using libsignal AND Store Bundle --- //
-        try {
-          // 1. Generate/Store keys locally
-          console.log(
-            `Generating Signal keys locally for user ${newUser.id}...`
-          );
-          const publicBundleComponents = await initializeSignalProtocol(
-            signalStore
-          );
-          console.log(
-            `Local Signal keys generated and stored via signalStore for user ${newUser.id}.`
-          );
-
-          // 2. Prepare bundle for API
-          console.log(`Preparing public bundle for user ${newUser.id}...`);
-          const preKeyToPublish = publicBundleComponents.preKeys[0];
-          if (!preKeyToPublish) {
-            throw new Error(
-              "No pre-keys available in generated bundle to publish."
-            );
-          }
-          const bundlePayload = {
-            userId: newUser.id,
-            registrationId: publicBundleComponents.registrationId,
-            identityKey: arrayBufferToBase64(
-              publicBundleComponents.identityPubKey
-            ),
-            signedPreKeyId: publicBundleComponents.signedPreKey.keyId,
-            signedPreKeyPublicKey: arrayBufferToBase64(
-              publicBundleComponents.signedPreKey.publicKey
-            ),
-            signedPreKeySignature: arrayBufferToBase64(
-              publicBundleComponents.signedPreKey.signature
-            ),
-            preKeyId: preKeyToPublish.keyId,
-            preKeyPublicKey: arrayBufferToBase64(preKeyToPublish.publicKey),
-          };
-
-          // 3. Store Public Bundle via API
-          console.log(
-            `Calling backend /api/signal/store-bundle for user ${newUser.id}...`
-          );
-          await post("/api/signal/store-bundle", bundlePayload);
-          console.log(
-            `Public bundle stored successfully via API for user ${newUser.id}.`
-          );
-
-          // 4. Navigate ONLY if all steps succeeded
-          console.log("Signup and key setup complete. Navigating to chat...");
-          navigate("/chat");
-        } catch (processError) {
-          // Catch errors from any step (local gen, bundle prep, API call)
-          console.error(
-            "Error during Signal key generation or bundle storage:",
-            processError
-          );
-          setError(
-            `Account created, but failed during security key setup: ${processError.message}. Please try logging in again or contact support.`
-          );
-          // Sign out user to prevent inconsistent state
-          await supabase.auth.signOut();
-          // No navigation happens here
-        }
-        // --- End Key Generation/Bundle Storage Logic --- //
 
         // Check if user needs email confirmation
         if (
