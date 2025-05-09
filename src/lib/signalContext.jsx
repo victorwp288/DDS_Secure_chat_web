@@ -50,7 +50,7 @@ export function SignalProvider({ children, userId }) {
           );
 
           console.log("[SignalContext] Registering bundle with server...");
-          const response = await post("/api/device/register", bundle);
+          const response = await post("/device/register", bundle);
           const newDeviceId = response?.deviceId;
 
           if (newDeviceId === undefined || newDeviceId === null) {
