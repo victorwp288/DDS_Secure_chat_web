@@ -1122,7 +1122,7 @@ export default function ChatPage() {
 
   // Main component JSX, ensure sig.deviceId is used where myDeviceIdForJSX was used
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-900">
+    <div className="flex h-screen bg-slate-900">
       {/* Sidebar - Chat List */}
       {(!isMobile || isMobileMenuOpen) && (
         <AnimatePresence>
@@ -1287,7 +1287,7 @@ export default function ChatPage() {
       )}
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
+      <div className="flex-1 flex flex-col h-full">
         {/* Chat Header */}
         <div className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800">
           <div className="flex items-center gap-3">
@@ -1397,7 +1397,7 @@ export default function ChatPage() {
         </div>
 
         {/* Messages Area */}
-        <ScrollArea className="flex-1 overflow-y-auto p-4 bg-gradient-to-b from-slate-900 to-slate-800">
+        <ScrollArea className="flex-1 p-4 bg-gradient-to-b from-slate-900 to-slate-800">
           <div className="space-y-4">
             {loadingMessages && (
               <div className="text-center text-slate-400 py-4">
