@@ -21,6 +21,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
@@ -65,6 +66,7 @@ export default function LoginPage() {
   const handleState = () => {
     setShowPassword((showState) => !showState);
   };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col">
@@ -152,6 +154,7 @@ export default function LoginPage() {
                       {showPassword ? <Eye size={20} /> : <EyeOff size={20} />}
                     </button>
                   </div>
+
                 </div>
 
                 <Button

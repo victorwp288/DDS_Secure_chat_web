@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import EmojiPicker from "emoji-picker-react";
+
 import {
   ArrowLeft,
   LogOut,
@@ -223,6 +224,8 @@ export default function ChatPage() {
   const [error, setError] = useState(null);
   const [messageSubscription, setMessageSubscription] = useState(null);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const fileInputRef = useRef();
 
   const isMobile = useMobile();
   const navigate = useNavigate();
@@ -809,6 +812,32 @@ export default function ChatPage() {
         );
       const plaintextBytes = new TextEncoder().encode(content);
       let lastInsertedMessageData = null;
+    if (!selectedConversation || !currentUser || (!newMessage.trim() && !selectedFile)) return;
+  
+    const conversationId = selectedConversation.id;
+    const profileId = currentUser.id;
+  
+    try {
+      if (newMessage.trim()) {
+        await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conversationId,
+            profile_id: profileId,
+            content: newMessage.trim(),
+          });
+      }
+  
+      if (selectedFile) {
+        await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conversationId,
+            profile_id: profileId,
+            content: `[File] ${selectedFile.name}`,
+          });
+
+      }
 
       for (const [peerDeviceId, preKeyBundleForDevice] of bundleMap) {
         const addr = new SignalProtocolAddress(peer.id, peerDeviceId);
@@ -988,6 +1017,22 @@ export default function ChatPage() {
       setError(`Failed to send message: ${err.message}`);
       setNewMessage(originalNewMessage);
     }
+  
+    setNewMessage("");
+    setSelectedFile(null);
+  };
+
+  const handleFileSelect = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+  
+    const maxSizeMB = 10;
+    if (file.size > maxSizeMB * 1024 * 1024) {
+      alert(`File size exceeds ${maxSizeMB}MB limit.`);
+      return;
+    }
+  
+    setSelectedFile(file);
   };
 
   const handleLogout = async () => {
@@ -1443,7 +1488,31 @@ export default function ChatPage() {
                           : "bg-slate-700 text-white rounded-tl-none"
                       }`}
                     >
-                      <p>{message.content}</p>
+                      <p>
+                        {message.content.startsWith("[File](") ? (
+                          // Format: [File](url) filename
+                          (() => {
+                            const match = message.content.match(/\[File\]\((.*?)\)\s*(.*)/);
+                            const url = match?.[1];
+                            const name = match?.[2] || "Download File";
+                            return (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline text-blue-400"
+                              >
+                                📎 {name}
+                              </a>
+                            );
+                          })()
+                        ) : message.content.startsWith("[File] ") ? (
+                          // Format: [File] filename (no URL yet — fallback)
+                          <span className="text-slate-300">📎 {message.content.slice(7)}</span>
+                        ) : (
+                          message.content
+                        )}
+                      </p>
                     </div>
                     <p className="text-xs text-slate-400 mt-1 ${message.isSelf ? 'text-left' : 'text-right'}">
                       {message.timestamp}
@@ -1476,6 +1545,22 @@ export default function ChatPage() {
             }}
             className="flex items-center gap-2"
           >
+            <Button
+              type="button"
+              variant="ghost"
+              className="text-slate-400 hover:text-white"
+              onClick={() => fileInputRef.current.click()}
+            >
+             📎
+             </Button>
+
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: "none" }}
+              onChange={handleFileSelect}
+            />
+
             <Input
               placeholder="Type a message..."
               className="bg-slate-700 border-slate-600 text-slate-200 placeholder:text-slate-400"
@@ -1493,12 +1578,13 @@ export default function ChatPage() {
             >
               😀
             </Button>
+
             <Button
               type="submit"
               size="icon"
               className="bg-emerald-500 hover:bg-emerald-600 text-white"
               disabled={
-                !newMessage.trim() ||
+                (!newMessage.trim() && !selectedFile) ||
                 !selectedConversation ||
                 loadingConversations ||
                 !isReady
@@ -1516,6 +1602,14 @@ export default function ChatPage() {
               />
             </div>
           )}
+
+          </form> 
+
+          {selectedFile && (
+            <div className="text-slate-400 text-xs mt-2 ml-2">
+                Attached: {selectedFile.name}
+            </div>
+          )}   
         </div>
       </div>
     </div>
