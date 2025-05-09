@@ -370,7 +370,7 @@ export default function ChatPage() {
             // *only* decrypt if it's still marked encrypted
             if (msg.is_encrypted) {
               try {
-                const { plaintext: p } = await post("/api/messages/decrypt", {
+                const { plaintext: p } = await post("/messages/decrypt", {
                   recipient_id: currentUser.id,
                   sender_id: msg.profile_id,
                   header_b64: msg.encryption_header,
@@ -530,7 +530,7 @@ export default function ChatPage() {
                 `[Realtime] Calling backend decrypt for msg ${newMessageData.id}...`
               );
               // Use post helper for decryption
-              const decryptResult = await post("/api/messages/decrypt", {
+              const decryptResult = await post("/messages/decrypt", {
                 recipient_id: currentUser.id,
                 sender_id: newMessageData.profile_id,
                 header_b64: newMessageData.encryption_header,
@@ -664,7 +664,7 @@ export default function ChatPage() {
         `[SendMessage] Ensuring session initiated for ${profile.id} -> ${recipientId}...`
       );
       // Use post helper to initiate session
-      const initiateResult = await post("/api/sessions/initiate", {
+      const initiateResult = await post("/sessions/initiate", {
         sender_id: profile.id,
         recipient_id: recipientId,
       });
@@ -695,7 +695,7 @@ export default function ChatPage() {
       );
       // Use post helper to encrypt
       const { header_b64, ciphertext_b64 } = await post(
-        "/api/messages/encrypt",
+        "/messages/encrypt",
         {
           sender_id: profile.id,
           recipient_id: recipientId,
