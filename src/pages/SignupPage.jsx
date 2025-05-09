@@ -14,7 +14,6 @@ import {
 import { AlertCircle, ArrowLeft, Lock, Shield } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { supabase } from "../lib/supabaseClient";
-import { ensureKeys } from "../lib/backend";
 
 export default function SignupPage() {
   const [name, setName] = useState("");
@@ -88,38 +87,59 @@ export default function SignupPage() {
       }
       console.log(`Profile upserted successfully for user ${newUser.id}.`);
 
-      try {
-        await ensureKeys(newUser.id);
-        console.log("✅ keys exist for", newUser.id);
-      } catch (e) {
-        console.error("Error ensuring keys exist:", e);
-        const errorMessage =
-          e && typeof e === "object" && e.message
-            ? e.message
-            : "An unknown error occurred during key generation.";
-        setError("Could not create encryption keys: " + errorMessage);
-        setIsLoading(false);
-        return;
+      console.log(`Checking for existing key bundle for user ${newUser.id}...`);
+      const { data: existingKeys, error: keyCheckError } = await supabase
+        .from("prekey_bundles")
+        .select("user_id")
+        .eq("user_id", newUser.id)
+        .maybeSingle();
+
+      if (keyCheckError) {
+        console.error("Error checking for existing keys:", keyCheckError);
+        throw new Error(
+          `Failed to check for existing encryption keys: ${keyCheckError.message}`
+        );
       }
 
-      if (
-        signUpData.session &&
-        signUpData.session.user.email_confirmed_at === null
-      ) {
-        setError(
-          "Account created! Please check your email to confirm your account before logging in."
+      if (!existingKeys) {
+        console.log(
+          `No existing keys found. User ${newUser.id} will register keys via SignalProvider on chat page load.`
         );
-      } else if (signUpData.user) {
-        console.log("Navigating to chat...");
-        navigate("/chat");
+
+        // Check if user needs email confirmation
+        if (
+          signUpData.session &&
+          signUpData.session.user.email_confirmed_at === null
+        ) {
+          setError(
+            "Account created! Please check your email to confirm your account before logging in."
+          );
+          // Optionally sign the user out until confirmed
+          // await supabase.auth.signOut();
+        } else if (signUpData.user) {
+          // User might be auto-confirmed or already confirmed
+          console.log("Navigating to chat...");
+          navigate("/chat");
+        } else {
+          // Should not happen if signup succeeded, but handle defensively
+          setError(
+            "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+          );
+        }
       } else {
-        setError(
-          "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+        // This block handles the case where keys *already* exist
+        console.log(
+          `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
         );
+        // If keys exist, the user should be okay to proceed
+        console.log("Existing keys found. Navigating to chat...");
+        navigate("/chat");
       }
     } catch (err) {
-      console.error("Error during sign up process:", err);
+      // This outer catch handles errors from Supabase signup or profile upsert primarily
+      console.error("Error during sign up process (before key gen):", err);
       if (!error) {
+        // Avoid overwriting specific errors like 'email exists'
         setError(`Signup failed: ${err.message || "Please try again."}`);
       }
     } finally {

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { AlertCircle, ArrowLeft, Mail } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+// eslint-disable-next-line
 import { motion } from "framer-motion";
 
 export default function ForgotPasswordPage() {

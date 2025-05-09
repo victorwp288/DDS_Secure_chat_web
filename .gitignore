@@ -23,7 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
-
+/frontend/.env
 .env
 
 .cursor
+
+repomix-output.txt
+.vercel

@@ -18,6 +18,7 @@ import {
   Sun,
   Volume2,
 } from "lucide-react";
+// eslint-disable-next-line
 import { motion } from "framer-motion";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
