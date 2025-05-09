@@ -609,7 +609,7 @@ export default function ChatPage() {
         );
         try {
           const peerBundlesData = await get(
-            `/api/signal/bundles/${newMessageData.profile_id}`
+            `/signal/bundles/${newMessageData.profile_id}`
           );
           if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
             throw new Error(
@@ -809,7 +809,7 @@ export default function ChatPage() {
         (p) => p.id !== profileId
       );
       if (!peer) throw new Error("Could not find peer.");
-      const peerBundlesData = await get(`/api/signal/bundles/${peer.id}`);
+      const peerBundlesData = await get(`/signal/bundles/${peer.id}`);
       if (!peerBundlesData || !Array.isArray(peerBundlesData))
         throw new Error(`No key bundles for peer ${peer.id}.`);
       const bundleMap = bundlesToMap(peerBundlesData);
