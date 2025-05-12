@@ -11,10 +11,11 @@ async function getAndDeleteOnePreKey(deviceId) {
     // Adjust column names if they differ in your 'prekey_bundles' table
     const { data: foundKey, error: findError } = await supabaseAdmin
       .from("prekey_bundles") // CORRECTED TABLE NAME
-      .select("key_id, public_key_b64") // ASSUMING COLUMNS: key_id, public_key_b64
-      .eq("device_id", deviceId) // ASSUMING FK is device_id
+      .select("prekey_id, public_key_b64") // Use actual column name
+      .eq("device_id", deviceId)
+      .order("prekey_id", { ascending: true })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle(); // Use maybeSingle to handle 0 rows gracefully
 
     if (findError) {
       console.error(
@@ -29,18 +30,28 @@ async function getAndDeleteOnePreKey(deviceId) {
       return null; // No keys left for this device
     }
 
+    // --- ADDED: Check if foundKey.prekey_id is valid --- START ---
+    if (typeof foundKey.prekey_id !== "number") {
+      console.error(
+        `[GetPreKey] Found pre-key row for device ${deviceId}, but its prekey_id is invalid (not a number): ${foundKey.prekey_id}. Skipping delete.`
+      );
+      return null; // Cannot proceed without a valid numeric ID
+    }
+    // --- ADDED: Check if foundKey.prekey_id is valid --- END ---
+
     // 2. Attempt to delete the specific key we found
     const { count: deleteCount, error: deleteError } = await supabaseAdmin
       .from("prekey_bundles") // CORRECTED TABLE NAME
       .delete()
       .eq("device_id", deviceId) // ADDED: Filter by device_id
-      .eq("key_id", foundKey.key_id) // Filter by the specific key_id
+      .eq("prekey_id", foundKey.prekey_id) // Use actual column name and correct field from foundKey
+      .order("prekey_id", { ascending: true })
       .limit(1); // ADDED: Limit to 1 (safety, though PK should ensure it)
 
     if (deleteError) {
       // Log unexpected DB errors during delete
       console.error(
-        `[GetPreKey] Error deleting pre-key ${foundKey.key_id} for device ${deviceId}:`,
+        `[GetPreKey] Error deleting pre-key ${foundKey.prekey_id} for device ${deviceId}:`,
         deleteError
       );
       return null; // Failed to secure the key
@@ -50,16 +61,16 @@ async function getAndDeleteOnePreKey(deviceId) {
     if (deleteCount !== 1) {
       // This means the key was likely deleted by another request between our SELECT and DELETE.
       console.warn(
-        `[GetPreKey] Failed to delete pre-key ${foundKey.key_id} for device ${deviceId} (deleteCount: ${deleteCount}, expected 1 - likely race condition or key already gone).`
+        `[GetPreKey] Failed to delete pre-key ${foundKey.prekey_id} for device ${deviceId} (deleteCount: ${deleteCount}, expected 1 - likely race condition or key already gone).`
       );
       return null; // Treat as key not available
     }
     // --- ADDED: Check if delete succeeded (handles race condition) --- END ---
 
-    // console.log(`[GetPreKey] Successfully retrieved and deleted pre-key ${foundKey.key_id} for device ${deviceId}.`);
+    // console.log(`[GetPreKey] Successfully retrieved and deleted pre-key ${foundKey.prekey_id} for device ${deviceId}.`);
     // Return the key data needed for the bundle
     return {
-      preKeyId: foundKey.key_id,
+      preKeyId: foundKey.prekey_id,
       preKeyPublicKey: foundKey.public_key_b64,
     };
   } catch (e) {

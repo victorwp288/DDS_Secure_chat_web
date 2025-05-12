@@ -322,7 +322,9 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const messagesEndRef = useRef(null);
   const sig = useSignal();
+  // --- Deconstruct earlier to use primitives in dependencies --- START ---
   const { isReady, signalStore, deviceId, initializationError } = sig || {};
+  // --- Deconstruct earlier to use primitives in dependencies --- END ---
   const currentUserRef = useRef(currentUser);
   const selectedConversationRef = useRef(selectedConversation);
 
@@ -474,16 +476,18 @@ export default function ChatPage() {
 
   // 3. Fetch messages when selectedConversation changes
   useEffect(() => {
-    if (!isReady) {
+    // --- MODIFIED: Remove setMessages([]) from guard --- START ---
+    if (!isReady || !deviceId) {
       console.log(
-        "[Effect 3] Signal context not ready, deferring message fetch."
+        "[Effect 3] Signal context not ready or deviceId missing, deferring message fetch (but not clearing list)." // Updated log
       );
-      setMessages([]);
+      // setMessages([]); // <-- REMOVED THIS LINE
       return;
     }
-    const { signalStore } = sig;
+    // --- MODIFIED: Remove setMessages([]) from guard --- END ---
+    // const { signalStore, deviceId } = sig; // Already destructured above
     if (!selectedConversation?.id || !currentUser?.id) {
-      setMessages([]);
+      setMessages([]); // Keep clearing if conversation/user is invalid
       return;
     }
     const recipientParticipant = selectedConversation.participants.find(
@@ -506,10 +510,10 @@ export default function ChatPage() {
             `id, body, type, created_at, profile_id, device_id, target_device_id, profiles ( id, full_name, username, avatar_url )`
           )
           .eq("conversation_id", selectedConversation.id)
-          // Fetch messages TO this device OR FROM this user (own messages)
-          // --- FIX: Correct PostgREST .or() filter --- START ---
-          .or(`target_device_id.eq.${deviceId},profile_id.eq.${currentUser.id}`)
-          // --- FIX: Correct PostgREST .or() filter --- END ---
+          // --- MODIFIED: Fetch ONLY messages targeting THIS device --- START ---
+          // Remove the .or() and filter strictly by target_device_id
+          .eq("target_device_id", deviceId)
+          // --- MODIFIED: Fetch ONLY messages targeting THIS device --- END ---
           .order("created_at", { ascending: true });
         console.log("[FetchMessages] raw rows after filtering:", data);
         // --- END FIX 2 ---
@@ -562,9 +566,17 @@ export default function ChatPage() {
           if (cachedContent) {
             processedContent = cachedContent;
           } else {
+            // --- MODIFIED: Handle plain-text sender copies --- START ---
             if (isSelfSent) {
-              processedContent = "[Self, Uncached - Error]";
+              if (msg.type === 1) {
+                // This is the plain-text sender copy
+                processedContent = msg.body;
+              } else {
+                // Unexpected uncached self-sent message (shouldn't happen with current logic)
+                processedContent = "[Self, Uncached Encrypted - Error]";
+              }
             } else {
+              // --- MODIFIED: Handle plain-text sender copies --- END ---
               // --- FIX: Do NOT preemptively build session for type 3 (PreKeyWhisper) messages ---
               const dbHexString = msg.body;
               let bodyUint8Array;
@@ -767,7 +779,9 @@ export default function ChatPage() {
       }
     };
     fetchMessagesAndEnsureSession();
-  }, [selectedConversation?.id, currentUser?.id, sig, isReady]);
+    // --- MODIFIED: Use primitive deviceId in dependencies, remove sig --- START ---
+  }, [selectedConversation?.id, currentUser?.id, isReady, deviceId]);
+  // --- MODIFIED: Use primitive deviceId in dependencies, remove sig --- END ---
 
   // 4. Scroll to bottom
   useEffect(() => {
