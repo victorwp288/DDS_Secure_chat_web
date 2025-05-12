@@ -10,11 +10,13 @@ import {
   Menu,
   MessageSquare,
   MoreVertical,
+  Pencil,
   Plus,
   Search,
   Send,
   Settings,
   User,
+  Users,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
@@ -30,12 +32,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import NewChatModal from "../components/NewChatModal";
+import NewGroupModal from "../components/NewGroupModal";
 import { useSignal } from "../lib/signalContext.jsx";
 import {
   encryptMessage,
   decryptMessage,
   arrayBufferToString,
-  buildSession,
   buf2hex,
   hexToUint8Array,
   bundlesToMap,
@@ -44,7 +46,7 @@ import {
   SignalProtocolAddress,
   SessionBuilder,
 } from "@privacyresearch/libsignal-protocol-typescript";
-import { get } from "../lib/backend";
+import { get, post } from "../lib/backend";
 import { cacheSentMessage, getCachedMessageContent } from "../lib/db";
 
 // Helper function to convert PostgreSQL bytea hex escape format ('\\x...') to ArrayBuffer
@@ -174,31 +176,114 @@ function arrayBufferToBase64(buffer) {
  * Try to build a Signal session, and if we get "Identity key changed",
  * reset that peer's session+identity and then build again.
  */
-async function safeBuildSession(store, userId, deviceId, preKeyBundle) {
-  const addr = `${userId}.${deviceId}`;
+async function safeProcessPreKey(store, userId, deviceId, bundle) {
+  const addr = new SignalProtocolAddress(userId, deviceId);
+  const addrStr = addr.toString();
+  const builder = new SessionBuilder(store, addr);
+
+  // 1) Check whether we've already saved & trusted this identity:
+  let trusted = false;
   try {
-    await buildSession(store, userId, deviceId, preKeyBundle);
+    // Check if the specific identityKey from the bundle is already trusted for this address.
+    // This also implicitly checks if an identity exists for addrStr.
+    trusted = await store.isTrustedIdentity(addrStr, bundle.identityKey);
+    if (trusted) {
+      console.log(
+        `[safeProcessPreKey] Identity for ${addrStr} from bundle is already trusted.`
+      );
+    } else {
+      // If not trusted, it could be a new peer, or a peer whose key changed AND our stored one is stale.
+      // We might also have no identity at all for them.
+      const existingKey = await store.loadIdentityKey(addrStr); // Check if *any* key is stored
+      if (!existingKey) {
+        console.log(
+          `[safeProcessPreKey] No identity previously stored for ${addrStr}. Will trust new one from bundle.`
+        );
+      } else {
+        console.log(
+          `[safeProcessPreKey] Stored identity for ${addrStr} exists but does not match bundle. Will attempt to save new one.`
+        );
+      }
+    }
+  } catch (e) {
+    // isTrustedIdentity or loadIdentityKey might throw if the store is in an unexpected state or addrStr is totally new
+    // (though typically they return false/null if not found).
+    // We assume not trusted if any error occurs here, and proceed to save.
+    console.warn(
+      `[safeProcessPreKey] Error checking trusted identity for ${addrStr}, assuming not trusted: ${e.message}`
+    );
+    trusted = false;
+  }
+
+  if (!trusted) {
+    // If not trusted (either because it's new, different, or check failed), save it.
+    // This is the crucial step to prevent false "Identity key changed" if no identity was there before.
+    console.log(
+      `[safeProcessPreKey] Attempting to save and trust new identity for ${addrStr} from bundle.`
+    );
+    await store.saveIdentity(addrStr, bundle.identityKey);
+    console.log(
+      `[safeProcessPreKey] Successfully saved new identity for ${addrStr}.`
+    );
+  }
+
+  // 2) Now build the session
+  try {
+    console.log(
+      `[safeProcessPreKey] Attempting SessionBuilder.processPreKey for ${addrStr}...`
+    );
+    await builder.processPreKey(bundle);
+    console.log(
+      `[safeProcessPreKey] Session built/updated successfully for ${addrStr}.`
+    );
   } catch (err) {
+    // If processPreKey *still* throws "Identity key changed" here,
+    // it means a genuine rotation happened and the key we just saved (if we did)
+    // or the key that was previously trusted, is now outdated by this very bundle.
     if (err.message?.includes("Identity key changed")) {
       console.warn(
-        `[safeBuildSession] Identity key changed for ${addr}. Resetting and rebuilding.`
+        `[safeProcessPreKey] Genuine identity key rotation detected by processPreKey for ${addrStr}. Clearing old session/identity, re-saving new identity, and retrying processPreKey.`
       );
-      await store.removeSession(addr);
-      await store.removeIdentity(addr);
+      await store.removeSession(addrStr); // Clear potentially stale session with the very old identity
+
+      // Explicitly remove the old identity before saving the new one
+      if (typeof store.removeIdentity === "function") {
+        await store.removeIdentity(addrStr);
+        console.log(`[safeProcessPreKey] Removed old identity for ${addrStr}.`);
+      } else {
+        // If store doesn't have a direct removeIdentity, this situation is harder to recover from cleanly
+        // without knowing the store's internal structure. For now, we'll log and proceed to save,
+        // hoping saveIdentity overwrites correctly. This might be a point of failure if not.
+        console.warn(
+          `[safeProcessPreKey] store.removeIdentity is not a function. Attempting to overwrite identity for ${addrStr}.`
+        );
+      }
+
+      await store.saveIdentity(addrStr, bundle.identityKey); // Re-save/ensure the identity from THIS bundle is current
+      console.log(
+        `[safeProcessPreKey] Re-saved new identity for ${addrStr} due to rotation detected by processPreKey.`
+      );
+
+      // Retry processPreKey with the newly trusted identity
       try {
-        await buildSession(store, userId, deviceId, preKeyBundle);
         console.log(
-          `[safeBuildSession] Second buildSession successful for ${addr} after reset.`
+          `[safeProcessPreKey] Retrying SessionBuilder.processPreKey for ${addrStr} after identity reset...`
+        );
+        await builder.processPreKey(bundle);
+        console.log(
+          `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after genuine key rotation.`
         );
       } catch (err2) {
-        console.warn(
-          `[safeBuildSession] Second buildSession failed for ${addr} after reset: ${err2.message}. Swallowing error to allow further processing.`
+        console.error(
+          `[safeProcessPreKey] Second SessionBuilder.processPreKey FAILED for ${addrStr} even after handling rotation: ${err2.message}. Rethrowing.`,
+          err2
         );
-        // SWALLOW err2 to allow SessionBuilder.processPreKey or encryptMessage to proceed
+        throw err2;
       }
     } else {
+      // For other errors during processPreKey (e.g., invalid bundle format)
       console.error(
-        `[safeBuildSession] Error building session for ${addr} (not identity change):`,
+        `[safeProcessPreKey] Error during SessionBuilder.processPreKey for ${addrStr} (not identity change): ${err.message}. Rethrowing.`,
         err
       );
       throw err;
@@ -224,8 +309,14 @@ export default function ChatPage() {
   const [error, setError] = useState(null);
   const [messageSubscription, setMessageSubscription] = useState(null);
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
+  const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
+  const [allUsers, setAllUsers] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef();
+
+  // New states for button loading
+  const [isRenamingGroup, setIsRenamingGroup] = useState(false);
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
 
   const isMobile = useMobile();
   const navigate = useNavigate();
@@ -335,7 +426,7 @@ export default function ChatPage() {
         const { data: convData, error: convError } = await supabase
           .from("conversations")
           .select(
-            `id, created_at, conversation_participants(profile_id, profiles(id, username, full_name, avatar_url, status))`
+            `id, created_at, is_group, group_name, group_avatar_url, conversation_participants(profile_id, profiles(id, username, full_name, avatar_url, status))`
           )
           .in("id", conversationIds);
         if (convError) throw convError;
@@ -345,17 +436,24 @@ export default function ChatPage() {
           );
           const otherParticipant =
             participants.find((p) => p.id !== profile.id) || participants[0];
+          const isGroup = conv.is_group;
           return {
             id: conv.id,
-            name:
-              otherParticipant?.full_name ||
-              otherParticipant?.username ||
-              "Unknown User",
+            name: isGroup
+              ? conv.group_name || "Unnamed Group"
+              : otherParticipant?.full_name ||
+                otherParticipant?.username ||
+                "Unknown User",
             lastMessage: "...",
             time: "",
             unread: 0,
-            avatar: otherParticipant?.avatar_url,
+            avatar: isGroup
+              ? conv.group_avatar_url
+              : otherParticipant?.avatar_url,
             participants,
+            is_group: isGroup,
+            group_name: conv.group_name,
+            group_avatar_url: conv.group_avatar_url,
           };
         });
         setConversations(formattedConversations);
@@ -401,16 +499,42 @@ export default function ChatPage() {
       setLoadingMessages(true);
       setError(null);
       try {
+        // --- FIX 2: Targeted Message Fetching ---
         const { data, error: messagesError } = await supabase
           .from("messages")
           .select(
             `id, body, type, created_at, profile_id, device_id, target_device_id, profiles ( id, full_name, username, avatar_url )`
           )
           .eq("conversation_id", selectedConversation.id)
+          // Fetch messages TO this device OR FROM this user (own messages)
+          // --- FIX: Correct PostgREST .or() filter --- START ---
+          .or(`target_device_id.eq.${deviceId},profile_id.eq.${currentUser.id}`)
+          // --- FIX: Correct PostgREST .or() filter --- END ---
           .order("created_at", { ascending: true });
+        console.log("[FetchMessages] raw rows after filtering:", data);
+        // --- END FIX 2 ---
+
         if (messagesError) throw messagesError;
         const decryptedMessages = [];
         for (const msg of data) {
+          // --- FIX: Deduplicate messages before decrypting --- START ---
+          // Check if this message ID already exists in the current state
+          // Use a check against the `messages` state directly before processing.
+          // Note: This assumes `messages` state reflects messages successfully processed so far.
+          if (messages.some((m) => m.id === msg.id)) {
+            console.log(
+              `[FetchMessages] Skipping msg ${msg.id} - already processed.`
+            );
+            continue; // Skip to the next message
+          }
+          // Alternative check: Check against the temporary `decryptedMessages` array being built,
+          // if multiple rows for the same logical message might exist in `data` (less likely with correct filtering)
+          // if (decryptedMessages.some(dm => dm.id === msg.id)) {
+          //   console.log(`[FetchMessages] Skipping msg ${msg.id} - duplicate row in fetch results.`);
+          //   continue;
+          // }
+          // --- FIX: Deduplicate messages before decrypting --- END ---
+
           let processedContent = null;
           const senderProfile = msg.profiles;
           const timestamp = msg.created_at
@@ -429,13 +553,19 @@ export default function ChatPage() {
           ) {
             continue;
           }
-          const cachedContent = await getCachedMessageContent(msg.id);
+          // --- Namespacing: Pass userId to getCachedMessageContent --- START ---
+          const cachedContent = await getCachedMessageContent(
+            currentUser.id,
+            msg.id
+          );
+          // --- Namespacing: Pass userId to getCachedMessageContent --- END ---
           if (cachedContent) {
             processedContent = cachedContent;
           } else {
             if (isSelfSent) {
               processedContent = "[Self, Uncached - Error]";
             } else {
+              // --- FIX: Do NOT preemptively build session for type 3 (PreKeyWhisper) messages ---
               const dbHexString = msg.body;
               let bodyUint8Array;
               try {
@@ -461,33 +591,157 @@ export default function ChatPage() {
                 continue;
               }
               if (bodyUint8Array) {
+                const senderDeviceIdNum = Number(msg.device_id || 1);
+                const addr = new SignalProtocolAddress(
+                  msg.profile_id,
+                  senderDeviceIdNum
+                );
+                const addrStr = addr.toString();
                 try {
-                  const senderDeviceId = msg.device_id;
+                  // For type 3, let libsignal handle session creation on decrypt
                   const plaintextBuffer = await decryptMessage(
                     signalStore,
-                    currentUser.id,
-                    msg.profile_id,
-                    senderDeviceId || 1,
+                    currentUser.id, // myUserId
+                    myCurrentDeviceId, // myDeviceId
+                    msg.profile_id, // theirUserId
+                    senderDeviceIdNum, // theirDeviceId
                     { type: msg.type, body: bodyUint8Array }
                   );
                   if (plaintextBuffer) {
                     processedContent = arrayBufferToString(plaintextBuffer);
-                    await cacheSentMessage({
+                    // --- Namespacing: Pass userId to cacheSentMessage --- START ---
+                    await cacheSentMessage(currentUser.id, {
                       id: msg.id,
                       content: processedContent,
                       conversationId: selectedConversation.id,
                       timestamp: msg.created_at,
                     });
+                    // --- Namespacing: Pass userId to cacheSentMessage --- END ---
                   } else {
-                    processedContent = "[Decryption Failed]";
+                    processedContent = "[Decryption Failed - No Buffer]";
                   }
                 } catch (decryptionError) {
-                  console.error(
-                    `[Effect 3] Decryption error for msg ${msg.id}:`,
-                    decryptionError
-                  );
-                  processedContent = "[Decryption Error]";
+                  // Handle duplicate prekey decryption gracefully
+                  if (
+                    decryptionError.message?.toLowerCase().includes("duplicate")
+                  ) {
+                    console.warn(
+                      `[FetchMessages] Duplicate prekey message for ${addrStr} (msg ID: ${msg.id}), ignoring.`
+                    );
+                    continue;
+                  }
+                  // --- FIX 3: Improved Bad MAC Handling ---
+                  // Check if it's a BadMacError specifically for PreKey messages (type 3)
+                  // Note: You might need to adjust how BadMacError is detected depending on libsignal's exact error object structure
+                  if (
+                    decryptionError.message?.includes("Bad MAC") &&
+                    msg.type === 3
+                  ) {
+                    console.warn(
+                      `[FetchMessages] Bad MAC for PreKeyWhisperMessage ${addrStr} (msg ID: ${msg.id}). Likely wrong key/device or duplicate. Ignoring.`
+                    );
+                    // Instead of full recovery, just mark as failed/skip
+                    processedContent =
+                      "[Decryption Failed - Bad MAC / Wrong Key]";
+                    // Or simply 'continue;' if you don't want to show anything
+                  }
+                  // --- END FIX 3 ---
+                  // Keep recovery for other errors, but maybe only if session exists?
+                  // Example: Keep recovery attempt for other potential errors if a session WAS expected
+                  // The original "Bad MAC" recovery logic is now conditional
+                  else if (decryptionError.message?.includes("Bad MAC")) {
+                    // This block handles Bad MAC for non-PreKey messages (less common, might indicate actual corruption/ratchet issue)
+                    // Or it handles the case where we decided *not* to simply ignore the PreKey Bad MAC above
+                    console.warn(
+                      `[FetchMessages Recover] Bad MAC detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry (Original Logic)...`
+                    );
+                    try {
+                      await signalStore.removeSession(addrStr);
+                      console.log(
+                        `[FetchMessages Recover] Removed session for ${addrStr}.`
+                      );
+                      const peerBundlesData = await get(
+                        `/signal/bundles/${msg.profile_id}`
+                      );
+                      if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
+                        throw new Error(
+                          `[FetchMessages Recover] No valid bundles array found for peer ${msg.profile_id}.`
+                        );
+                      }
+                      const bundleMap = bundlesToMap(peerBundlesData);
+                      const bundleForDevice = bundleMap.get(senderDeviceIdNum);
+                      if (!bundleForDevice) {
+                        throw new Error(
+                          `[FetchMessages Recover] Bundle not found for ${addrStr} (Device ID: ${senderDeviceIdNum}) after fetching.`
+                        );
+                      }
+                      console.log(
+                        `[FetchMessages Recover] Fetched bundle for ${addrStr}.`
+                      );
+                      await safeProcessPreKey(
+                        signalStore,
+                        msg.profile_id,
+                        senderDeviceIdNum,
+                        bundleForDevice
+                      );
+                      console.log(
+                        `[FetchMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
+                      );
+                      const plaintextBufferRetry = await decryptMessage(
+                        signalStore,
+                        currentUser.id, // myUserId
+                        myCurrentDeviceId, // myDeviceId
+                        msg.profile_id, // theirUserId
+                        senderDeviceIdNum, // theirDeviceId
+                        { type: msg.type, body: bodyUint8Array }
+                      );
+                      if (plaintextBufferRetry) {
+                        processedContent =
+                          arrayBufferToString(plaintextBufferRetry);
+                        // --- Namespacing: Pass userId to cacheSentMessage --- START ---
+                        await cacheSentMessage(currentUser.id, {
+                          id: msg.id,
+                          content: processedContent, // --- FIX 4: Ensure caching after successful retry ---
+                          conversationId: selectedConversation.id,
+                          timestamp: msg.created_at,
+                        });
+                        // --- Namespacing: Pass userId to cacheSentMessage --- END ---
+                        console.log(
+                          `[FetchMessages Recover] Decryption successful for ${addrStr} after retry.`
+                        );
+                      } else {
+                        processedContent =
+                          "[Decryption Failed After Retry - No Buffer]";
+                        console.warn(
+                          `[FetchMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
+                        );
+                      }
+                    } catch (recoveryError) {
+                      console.error(
+                        `[FetchMessages Recover] Error during recovery for ${addrStr}: ${recoveryError.message}`,
+                        recoveryError
+                      );
+                      processedContent =
+                        "[Decryption Error After Recovery Attempt]";
+                    }
+                  } else {
+                    // For errors other than "Bad MAC"
+                    console.error(
+                      `[Effect 3] Decryption error for msg ${msg.id} (not Bad MAC):`,
+                      decryptionError
+                    );
+                    processedContent = "[Decryption Error - Other]";
+                  }
                 }
+              } else {
+                // This case handles when bodyUint8Array is null/undefined
+                console.warn(
+                  `[Effect 3] Skipping msg ${msg.id} due to missing bodyUint8Array.`
+                );
+                // Optionally add a placeholder message or just skip
+                processedContent = "[Message Body Missing/Invalid]";
+                // We need to push something to maintain message order, or `continue;` to skip entirely.
+                // Let's push the error message for now.
               }
             }
           }
@@ -569,6 +823,9 @@ export default function ChatPage() {
       } (type: ${typeof newMessageData.target_device_id}), myCurrentDeviceId = ${myCurrentDeviceIdFromContext} (type: ${typeof myCurrentDeviceIdFromContext})`
     );
 
+    // --- FIX 2b: Realtime Device ID Filter ---
+    // Use the same logic as the main fetch query filter (check target OR self-sent)
+    // Although this handler is specifically for non-self messages, double-check target_device_id
     if (
       newMessageData.target_device_id !== undefined &&
       newMessageData.target_device_id !== null && // Keep null check
@@ -582,6 +839,7 @@ export default function ChatPage() {
       );
       return;
     }
+    // --- END FIX 2b ---
 
     if (messages.some((msg) => msg.id === newMessageData.id)) {
       console.log(
@@ -596,54 +854,8 @@ export default function ChatPage() {
     );
     const senderAddressString = senderAddress.toString();
 
-    if (newMessageData.type === 3) {
-      console.log(
-        `[Realtime HNM] Received PreKeyWhisperMessage (Type 3) id: ${newMessageData.id} from ${senderAddressString}`
-      );
-      const existingSession = await currentSignalStore.loadSession(
-        senderAddressString
-      );
-      if (!existingSession) {
-        console.log(
-          `[Realtime HNM] No existing session for ${senderAddressString} for Type 3. Attempting to build one.`
-        );
-        try {
-          const peerBundlesData = await get(
-            `/signal/bundles/${newMessageData.profile_id}`
-          );
-          if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
-            throw new Error(
-              `No valid bundles array found for peer ${newMessageData.profile_id}.`
-            );
-          }
-          const peerBundleMap = bundlesToMap(peerBundlesData);
-          const specificDeviceBundle = peerBundleMap.get(
-            newMessageData.device_id || 1
-          );
-          if (!specificDeviceBundle) {
-            throw new Error(`Bundle not found for ${senderAddressString}`);
-          }
-          const sessionBuilder = new SessionBuilder(
-            currentSignalStore,
-            senderAddress
-          );
-          await sessionBuilder.processPreKey(specificDeviceBundle);
-          console.log(
-            `[Realtime HNM] SessionBuilder.processPreKey successful for ${senderAddressString}.`
-          );
-        } catch (buildError) {
-          console.error(
-            `[Realtime HNM] Error building session for Type 3 from ${senderAddressString}:`,
-            buildError
-          );
-          // Allow decryption to proceed and likely fail, for logging.
-        }
-      } else {
-        console.log(
-          `[Realtime HNM] Existing session found for ${senderAddressString} for Type 3.`
-        );
-      }
-    }
+    // --- FIX: Do NOT preemptively build session for type 3 (PreKeyWhisper) messages ---
+    // Let libsignal handle session creation on decrypt
 
     const { data: senderProfile } = await supabase
       .from("profiles")
@@ -675,33 +887,59 @@ export default function ChatPage() {
     try {
       plaintextBuffer = await decryptMessage(
         currentSignalStore,
-        currentUserId, // Pass currentUserId
-        newMessageData.profile_id,
-        newMessageData.device_id || 1,
+        currentUserId, // myUserId
+        myCurrentDeviceIdFromContext, // myDeviceId
+        newMessageData.profile_id, // theirUserId
+        newMessageData.device_id || 1, // theirDeviceId
         ciphertextForDecryption
       );
     } catch (e) {
-      console.error("[Realtime HNM] Decryption error:", e);
+      // Handle duplicate prekey decryption gracefully
+      if (e.message?.toLowerCase().includes("duplicate")) {
+        console.warn(
+          `[Realtime HNM] Duplicate prekey message for ${senderAddressString} (msg ID: ${newMessageData.id}), ignoring.`
+        );
+        return;
+      }
+      // --- FIX 3b: Improved Bad MAC Handling (Realtime) ---
+      // Check if it's a BadMacError specifically for PreKey messages (type 3)
+      if (e.message?.includes("Bad MAC") && newMessageData.type === 3) {
+        console.warn(
+          `[Realtime HNM] Bad MAC for PreKeyWhisperMessage ${senderAddressString} (msg ID: ${newMessageData.id}). Likely wrong key/device or duplicate. Ignoring.`
+        );
+        return; // Don't proceed, don't show error in UI
+      }
+      // --- END FIX 3b ---
+
+      console.error("[Realtime HNM] Decryption error (other):", e);
+      // Maybe show a temporary error or just log and return
+      // For now, just return to avoid adding a broken message
       return;
     }
     if (!plaintextBuffer) {
       console.warn("[Realtime HNM] Decryption returned null.");
       return;
     }
-
     const plaintext = arrayBufferToString(plaintextBuffer);
     // Ensure selectedConversation is still valid before caching
+    // --- FIX 4b: Ensure Caching (Realtime) ---
     if (
       selectedConversationService &&
       selectedConversationService.id === newMessageData.conversation_id
     ) {
-      await cacheSentMessage({
-        id: newMessageData.id,
-        content: plaintext,
-        conversationId: selectedConversationService.id,
-        timestamp: newMessageData.created_at,
-      });
+      // --- Namespacing: Pass userId to cacheSentMessage --- START ---
+      await cacheSentMessage(
+        currentUserId, // Pass currentUserId
+        {
+          id: newMessageData.id,
+          content: plaintext,
+          conversationId: selectedConversationService.id,
+          timestamp: newMessageData.created_at,
+        }
+      );
+      // --- Namespacing: Pass userId to cacheSentMessage --- END ---
     }
+    // --- END FIX 4b ---
 
     const formatted = {
       id: newMessageData.id,
@@ -804,203 +1042,396 @@ export default function ChatPage() {
       }
     }
 
+    let successfullySentToAtLeastOneDevice = false;
+    let lastInsertedMessageDataForUI = null;
+    setError(null); // Clear previous errors
+
     try {
-      const peer = selectedConversation.participants.find(
+      const peers = selectedConversation.participants.filter(
         (p) => p.id !== profileId
       );
-      if (!peer) throw new Error("Could not find peer.");
-      const peerBundlesData = await get(`/signal/bundles/${peer.id}`);
-      if (!peerBundlesData || !Array.isArray(peerBundlesData))
-        throw new Error(`No key bundles for peer ${peer.id}.`);
-      const bundleMap = bundlesToMap(peerBundlesData);
-      if (bundleMap.size === 0)
-        throw new Error(
-          `No pre-key bundle published for ${
-            selectedConversation.name || peer.id
-          }.`
-        );
+      if (peers.length === 0) {
+        throw new Error("No other participants found in this conversation.");
+      }
+
       const plaintextBytes = new TextEncoder().encode(contentToProcess);
-      let lastInsertedMessageData = null;
 
-      for (const [peerDeviceId, preKeyBundleForDevice] of bundleMap) {
-        const addr = new SignalProtocolAddress(peer.id, peerDeviceId);
-        const addrStr = addr.toString();
+      for (const peer of peers) {
+        console.log(`[SendMessage] Processing peer: ${peer.id}`);
 
-        try {
-          if (!(await signalStore.containsSession(addrStr))) {
+        // DEBUGGING BLOCK START
+        if (peer.id === "d2fbdbb5-38d1-4d89-8321-ce28ea0fe22f") {
+          console.log(`[DEBUG] Checking stored identities for peer ${peer.id}`);
+          try {
+            const addr79Str = new SignalProtocolAddress(peer.id, 79).toString();
+            const key79 = await signalStore.loadIdentityKey(addr79Str);
             console.log(
-              `[SendMessage] No session for ${addrStr}, attempting initial safeBuildSession...`
+              "[DEBUG] Stored identityKey for device #79:",
+              key79 ? buf2hex(key79) : "null or undefined"
             );
-            await safeBuildSession(
-              signalStore,
-              peer.id,
-              peerDeviceId,
-              preKeyBundleForDevice
-            );
+
+            const addr80Str = new SignalProtocolAddress(peer.id, 80).toString();
+            const key80 = await signalStore.loadIdentityKey(addr80Str);
             console.log(
-              `[SendMessage] Initial safeBuildSession completed for ${addrStr}.`
+              "[DEBUG] Stored identityKey for device #80:",
+              key80 ? buf2hex(key80) : "null or undefined"
+            );
+          } catch (e) {
+            console.error(
+              "[DEBUG] Error loading identity keys for debugging:",
+              e
             );
           }
-        } catch (buildErr) {
-          console.warn(
-            `[SendMessage] Error during initial safeBuildSession for ${addrStr}, continuing to next step or device: `,
-            buildErr.message || buildErr
-          );
-          // Continue to the explicit SessionBuilder.processPreKey attempt or next device
         }
+        // DEBUGGING BLOCK END
 
-        // --- force the PreKey handshake on sender side (USER'S DIFF) ---
         try {
-          console.log(
-            `[SendMessage] Attempting direct SessionBuilder.processPreKey for ${addrStr} before encryption.`
-          );
-          const builder = new SessionBuilder(signalStore, addr);
-          await builder.processPreKey(preKeyBundleForDevice);
-          console.log(
-            `[SendMessage] Direct SessionBuilder.processPreKey successful for ${addrStr}.`
-          );
-        } catch (processPreKeyError) {
-          console.warn(
-            `[SendMessage] Error during direct SessionBuilder.processPreKey for ${addrStr}: ${processPreKeyError.message}. Encryption will still be attempted.`,
-            processPreKeyError
-          );
-        }
+          const peerBundlesData = await get(`/signal/bundles/${peer.id}`);
 
-        // Now, attempt encryption and DB insert
-        try {
-          console.log(`[SendMessage] Attempting encryption for ${addrStr}...`);
-          const ct = await encryptMessage(
-            signalStore,
-            peer.id,
-            peerDeviceId,
-            plaintextBytes.buffer
-          );
-          const bodyUint8Array = Uint8Array.from(ct.body, (c) =>
-            c.charCodeAt(0)
-          );
-          const pgByteaLiteral = `\\x${buf2hex(bodyUint8Array)}`;
-          console.log(`[SendMessage] Attempting DB insert for ${addrStr}...`);
-          const { data: insertedData, error: insertError } = await supabase
-            .from("messages")
-            .insert({
-              conversation_id: conversationId,
-              profile_id: profileId,
-              type: ct.type,
-              body: pgByteaLiteral,
-              device_id: myDeviceId,
-              target_device_id: peerDeviceId,
-            })
-            .select();
-          if (insertError) {
-            console.error(`DB insert failed for ${addrStr}:`, insertError);
-            continue;
+          // ---- INSTRUMENTATION START ----
+          console.log(`[Signal] 📥 Fetched bundles for peer ${peer.id}:`, {
+            count: peerBundlesData?.length || 0,
+            deviceIds: Array.isArray(peerBundlesData)
+              ? peerBundlesData.map((b) => b.deviceId)
+              : "Not an array or undefined",
+            rawData: peerBundlesData,
+          });
+          // ---- INSTRUMENTATION END ----
+
+          if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
+            console.warn(`No key bundles found for peer ${peer.id}. Skipping.`);
+            continue; // Skip to the next peer
           }
-          if (insertedData && insertedData.length > 0) {
-            lastInsertedMessageData = insertedData[0];
-            console.log(
-              `[SendMessage] Successfully sent to ${addrStr}. Continuing to next device if any.`
-            );
-          }
-        } catch (encryptErr) {
-          if (
-            encryptErr instanceof Error &&
-            encryptErr.message?.includes("Identity key changed")
-          ) {
+          const bundleMap = bundlesToMap(peerBundlesData);
+          if (bundleMap.size === 0) {
             console.warn(
-              `[SendMessage] Identity key changed during encrypt/send for ${addrStr}. Retrying build and send...`
+              `No pre-key bundle published for ${peer.id}. Skipping.`
             );
-            await signalStore.removeSession(addrStr);
-            await signalStore.removeIdentity(addrStr);
+            continue; // Skip to the next peer
+          }
+
+          // DEBUGGING BLOCK FOR BUNDLE KEYS (START)
+          if (peer.id === "d2fbdbb5-38d1-4d89-8321-ce28ea0fe22f") {
+            console.log(
+              `[DEBUG] Checking bundle identityKeys for peer ${peer.id}`
+            );
+            const b79 = bundleMap.get(79);
+            const b80 = bundleMap.get(80);
+
+            if (b79 && b79.identityKey) {
+              console.log(
+                "[DEBUG] Bundle identityKey for #79:",
+                buf2hex(new Uint8Array(b79.identityKey))
+              );
+              console.log("[DEBUG] Full bundle #79:", b79);
+            } else {
+              console.log(
+                "[DEBUG] Bundle for #79 not found or has no identityKey."
+              );
+            }
+
+            if (b80 && b80.identityKey) {
+              console.log(
+                "[DEBUG] Bundle identityKey for #80:",
+                buf2hex(new Uint8Array(b80.identityKey))
+              );
+              console.log("[DEBUG] Full bundle #80:", b80);
+            } else {
+              console.log(
+                "[DEBUG] Bundle for #80 not found or has no identityKey."
+              );
+            }
+          }
+          // DEBUGGING BLOCK FOR BUNDLE KEYS (END)
+
+          for (const [peerDeviceId, preKeyBundleForDevice] of bundleMap) {
+            const addr = new SignalProtocolAddress(peer.id, peerDeviceId);
+            const addrStr = addr.toString();
+            console.log(`[SendMessage] Processing device: ${addrStr}`);
+
             try {
-              await safeBuildSession(
+              // --- FIX 5: Sender Sanity Check ---
+              if (preKeyBundleForDevice.deviceId !== peerDeviceId) {
+                console.error(
+                  `[SendMessage SANITY FAIL] Mismatch! Bundle deviceId (${preKeyBundleForDevice.deviceId}) !== loop peerDeviceId (${peerDeviceId}) for peer ${peer.id}. Skipping device.`
+                );
+                continue; // Skip this device, something is wrong upstream
+              }
+              // --- END FIX 5 ---
+
+              // --- FIX: Sender-Side Identity Safeguard --- START ---
+              // Check if the identity key we are about to use for encryption is trusted.
+              const identityKeyFromBundle = preKeyBundleForDevice.identityKey; // Already ArrayBuffer
+              const isTrusted = await signalStore.isTrustedIdentity(
+                addrStr,
+                identityKeyFromBundle
+              );
+
+              if (!isTrusted) {
+                console.warn(
+                  `[SendMessage] Identity key in fetched bundle for ${addrStr} is NOT trusted. This might be a stale bundle. Removing old session/identity and trusting the key from THIS bundle before proceeding.`
+                );
+                await signalStore.removeSession(addrStr); // Remove session based on old identity
+                // Ensure removeIdentity function exists before calling
+                if (typeof signalStore.removeIdentity === "function") {
+                  await signalStore.removeIdentity(addrStr); // Remove the old (potentially wrong) trusted identity
+                  console.log(
+                    `[SendMessage] Removed old identity for ${addrStr}.`
+                  );
+                } else {
+                  console.warn(
+                    `[SendMessage] store.removeIdentity not found, cannot explicitly remove old identity for ${addrStr}. Overwriting.`
+                  );
+                }
+                // Save the identity from the bundle we are about to use.
+                await signalStore.saveIdentity(addrStr, identityKeyFromBundle);
+                console.log(
+                  `[SendMessage] Saved new identity for ${addrStr} from bundle.`
+                );
+                // Session will be built implicitly by encryptMessage now using the newly trusted key.
+                // We could explicitly call ensureOutboundSession here again, but encrypt should handle it.
+              }
+              // --- FIX: Sender-Side Identity Safeguard --- END ---
+
+              // 1) Ensure identity and session are in sync *before* attempting encryption.
+              // Only the SENDER should ever build a session proactively.
+              console.log(
+                `[SendMessage] Ensuring outbound session for ${addrStr} via ensureOutboundSession...` // <<< LOG BEFORE ensureOutboundSession
+              );
+              // --- Replace ensureOutboundSession with safeProcessPreKey --- START ---
+              /* OLD Call:
+              await ensureOutboundSession(
                 signalStore,
+                profile.id,
                 peer.id,
                 peerDeviceId,
                 preKeyBundleForDevice
               );
+              */
+              await safeProcessPreKey(
+                signalStore, // the store
+                peer.id, // their userId
+                peerDeviceId, // their deviceId
+                preKeyBundleForDevice // the bundle you just fetched
+              );
+              // --- Replace ensureOutboundSession with safeProcessPreKey --- END ---
               console.log(
-                `[SendMessage] safeBuildSession successful for ${addrStr} after identity change during encrypt.`
+                `[SendMessage] Outbound session ensured/handled for ${addrStr}. Proceeding to encrypt.` // <<< LOG AFTER safeProcessPreKey
               );
-              // Retry encrypt + insert
-              const ctRetry = await encryptMessage(
-                signalStore,
-                peer.id,
-                peerDeviceId,
-                plaintextBytes.buffer
-              );
-              const bodyRetry = Uint8Array.from(ctRetry.body, (c) =>
-                c.charCodeAt(0)
-              );
-              const pgByteaRetry = `\\x${buf2hex(bodyRetry)}`;
-              const { data: insertedDataRetry, error: insertErrRetry } =
-                await supabase
-                  .from("messages")
-                  .insert({
-                    conversation_id: conversationId,
-                    profile_id: profileId,
-                    type: ctRetry.type,
-                    body: pgByteaRetry,
-                    device_id: myDeviceId,
-                    target_device_id: peerDeviceId,
-                  })
-                  .select();
 
-              if (insertErrRetry) {
-                console.error(
-                  `[SendMessage] DB insert failed for ${addrStr} on retry:`,
-                  insertErrRetry
+              // --- Add Debug Log --- START ---
+              console.log(
+                "[DEBUG] containsSession after ensureOutboundSession?",
+                await signalStore.containsSession(addrStr)
+              );
+              // --- Add Debug Log --- END ---
+
+              // 2) Now encrypt exactly once.
+              // --- Fix 3: Retry encryptMessage on "No record" error --- START ---
+              let ct;
+              try {
+                console.log(
+                  `[SendMessage] Attempting encryptMessage for ${addrStr} (Attempt 1)...`
+                );
+                ct = await encryptMessage(
+                  signalStore,
+                  peer.id,
+                  peerDeviceId,
+                  plaintextBytes.buffer
+                );
+              } catch (e) {
+                if (String(e).includes("No record for")) {
+                  console.warn(
+                    `[SendMessage] Caught 'No record for ${addrStr}' error on encrypt (Attempt 1). Removing session, ensuring session again, and retrying...`,
+                    e
+                  );
+                  // Remove the potentially corrupted session
+                  await signalStore.removeSession(addrStr);
+                  // Attempt to rebuild the session using the bundle we already have
+                  try {
+                    await safeProcessPreKey(
+                      signalStore,
+                      peer.id,
+                      peerDeviceId,
+                      preKeyBundleForDevice
+                    );
+                    console.log(
+                      `[SendMessage] Session rebuild successful for ${addrStr} after 'No record' error. Retrying encrypt...`
+                    );
+                    // Retry encryption
+                    ct = await encryptMessage(
+                      signalStore,
+                      peer.id,
+                      peerDeviceId,
+                      plaintextBytes.buffer
+                    );
+                    console.log(
+                      `[SendMessage] Encrypt successful for ${addrStr} (Attempt 2).`
+                    );
+                  } catch (rebuildOrRetryError) {
+                    console.error(
+                      `[SendMessage] Error during session rebuild or encrypt retry for ${addrStr}:`,
+                      rebuildOrRetryError
+                    );
+                    // Set ct to null or undefined to prevent insertion, or rethrow
+                    ct = null;
+                    // Optionally: throw rebuildOrRetryError; // to propagate the error
+                  }
+                } else {
+                  // Re-throw other encryption errors
+                  console.error(
+                    `[SendMessage] Non-'No record' encryption error for ${addrStr}:`,
+                    e
+                  );
+                  throw e;
+                }
+              }
+              // --- Fix 3: Retry encryptMessage on "No record" error --- END ---
+
+              if (!ct) {
+                // This case handles explicit failures from the retry block or rare null returns
+                console.warn(
+                  `[SendMessage] Ciphertext (ct) is undefined for ${addrStr} after encryptMessage, though no error was thrown. Skipping DB insert.`
                 );
                 continue;
               }
-              if (insertedDataRetry && insertedDataRetry.length > 0) {
-                lastInsertedMessageData = insertedDataRetry[0];
+
+              // 3) Convert to hex & insert into DB as before
+              const bodyUint8Array = Uint8Array.from(ct.body, (c) =>
+                c.charCodeAt(0)
+              );
+              const pgByteaLiteral = `\\x${buf2hex(bodyUint8Array)}`;
+
+              const messageToInsert = {
+                conversation_id: conversationId,
+                profile_id: profileId,
+                type: ct.type,
+                body: pgByteaLiteral,
+                device_id: myDeviceId,
+                target_device_id: peerDeviceId,
+              };
+
+              console.log(
+                `[SendMessage] RAW INSERT ATTEMPT for ${addrStr}. Payload:`,
+                JSON.stringify(messageToInsert)
+              );
+
+              let insertResult;
+              try {
+                insertResult = await supabase
+                  .from("messages")
+                  .insert(messageToInsert)
+                  .select();
                 console.log(
-                  `[SendMessage] Successfully sent to ${addrStr} after retry. Continuing to next device if any.`
+                  `[SendMessage] RAW INSERT SUCCEEDED for ${addrStr}. Response:`,
+                  JSON.stringify(insertResult)
+                );
+              } catch (rawInsertError) {
+                console.error(
+                  `[SendMessage] RAW INSERT FAILED for ${addrStr} (exception during await):`,
+                  rawInsertError
+                );
+                setError(
+                  `DEBUG: Raw insert failed for ${addrStr}: ${rawInsertError.message}`
+                );
+                continue; // Skip to next device
+              }
+
+              const { data: insertedData, error: dbErr } = insertResult || {
+                data: null,
+                error: null,
+              };
+
+              if (dbErr) {
+                console.error(
+                  `[SendMessage] DB insert failed for ${addrStr} (from insertResult.error):`,
+                  dbErr
+                );
+                // Optionally set an error state for the user, or retry specific errors
+                // For now, just log and continue to the next device/peer
+                continue; // Continue to the next device/peer
+              }
+
+              if (insertedData && insertedData.length > 0) {
+                lastInsertedMessageDataForUI = insertedData[0];
+                successfullySentToAtLeastOneDevice = true;
+                console.log(`[SendMessage] Successfully sent to ${addrStr}.`);
+              } else {
+                // This case might indicate a successful insert but no returned data, which could be an issue.
+                console.warn(
+                  `[SendMessage] DB insert for ${addrStr} reported success but returned no data.`
                 );
               }
-            } catch (retryBuildErr) {
+            } catch (deviceProcessingError) {
+              // This catch block now handles errors from safeProcessPreKey (if it re-throws) or the single encryptMessage attempt.
               console.error(
-                `[SendMessage] Failed to rebuild session or resend for ${addrStr} after identity change: ${retryBuildErr.message}. Skipping device.`,
-                retryBuildErr
+                `[SendMessage] Error processing device ${addrStr}: ${deviceProcessingError.message}. Skipping device.`,
+                deviceProcessingError
               );
-              continue;
-            }
-          } else {
-            console.error(
-              `[SendMessage] Non-identity error during encrypt/send for ${addrStr}:`,
-              encryptErr
-            );
-            continue;
-          }
+              continue; // To next device/peer
+            } // End try-catch for a single device
+          } // End for...of bundleMap (devices for a peer)
+        } catch (peerProcessingError) {
+          // Errors like failing to fetch bundles for a peer
+          console.error(
+            `[SendMessage] Error processing peer ${peer.id}: ${peerProcessingError.message}. Skipping peer.`,
+            peerProcessingError
+          );
+          continue; // Skip to the next peer
         }
-      } // End for...of loop
-      if (lastInsertedMessageData) {
-        setError(null);
+      } // End for...of peers
+
+      if (successfullySentToAtLeastOneDevice && lastInsertedMessageDataForUI) {
         const newMessageForUI = {
-          id: lastInsertedMessageData.id,
+          id: lastInsertedMessageDataForUI.id, // Use the ID from the last successful insert
           senderId: profileId,
           senderName: profile?.full_name || profile?.username || "Me",
           senderAvatar: profile?.avatar_url,
-          content: contentToProcess,
+          content: contentToProcess, // The original plaintext content
           timestamp: new Date(
-            lastInsertedMessageData.created_at
+            lastInsertedMessageDataForUI.created_at
           ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           isSelf: true,
         };
         setMessages((prevMessages) => [...prevMessages, newMessageForUI]);
-        await cacheSentMessage({ ...newMessageForUI, conversationId });
+        // --- Namespacing: Pass userId to cacheSentMessage --- START ---
+        await cacheSentMessage(
+          profileId, // Pass current user ID
+          { ...newMessageForUI, conversationId }
+        );
+        // --- Namespacing: Pass userId to cacheSentMessage --- END ---
         setNewMessage("");
         setSelectedFile(null);
-      } else if (bundleMap.size > 0) {
-        setError("Failed to send message to any peer device.");
-        setNewMessage(originalNewMessage);
+        setError(null); // Clear any general error if successful
+
+        // --- ➕ ADD SENDER COPY --- START ---
+        try {
+          console.log(
+            `[SendMessage] Inserting sender copy for conv ${conversationId}, user ${profileId}, device ${myDeviceId}`
+          );
+          await supabase.from("messages").insert({
+            conversation_id: conversationId,
+            profile_id: profileId, // Sender's ID
+            device_id: myDeviceId, // Sender's current device ID
+            target_device_id: myDeviceId, // Mark it as "for me"
+            type: 1, // Convention for plain-text
+            body: contentToProcess, // The original plain text message
+          });
+          console.log("[SendMessage] Sender copy inserted successfully.");
+        } catch (err) {
+          // Log error but don't block UI/throw, as the message *was* sent to others
+          console.error("[SendMessage] Failed to insert sender copy:", err);
+        }
+        // --- ➕ ADD SENDER COPY --- END ---
       } else {
-        setError("No key bundles for recipient.");
-        setNewMessage(originalNewMessage);
+        // This error will be set if the message wasn't sent to *any* device of *any* peer
+        throw new Error("Failed to send message to any recipient device.");
       }
     } catch (err) {
+      // General errors (e.g., no peers, or if all sends failed and threw the error above)
+      console.error("[SendMessage] Overall error:", err);
       setError(`Failed to send message: ${err.message}`);
-      setNewMessage(originalNewMessage);
+      setNewMessage(originalNewMessage); // Restore original message on total failure
     }
   };
 
@@ -1018,12 +1449,44 @@ export default function ChatPage() {
   };
 
   const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      console.error("Error logging out:", error);
-    } else {
-      navigate("/login");
+    // First, sign out from Supabase auth
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) {
+      console.error("Error signing out from Supabase:", signOutError);
+      // Optionally, you might want to display this error to the user
+      // For now, we'll proceed to try clearing local stores anyway
     }
+
+    // --- Fix: Selectively Clear localStorage (Keep _deviceId) --- START ---
+    try {
+      console.log(
+        "[Logout] Selectively clearing localStorage (keeping _deviceId keys)...",
+        localStorage
+      );
+      // ✅ only clear the Supabase auth keys (or others, but not _deviceId)
+      Object.keys(localStorage)
+        .filter(
+          (k) => /* k.startsWith("supabase") || */ !k.endsWith("_deviceId")
+        ) // Keep _deviceId, remove others (adjust filter as needed)
+        .forEach((k) => {
+          console.log(`[Logout] Removing localStorage item: ${k}`);
+          localStorage.removeItem(k);
+        });
+      console.log(
+        "[Logout] Selective localStorage clear complete.",
+        localStorage
+      );
+    } catch (e) {
+      console.error("[Logout] Error during selective localStorage clear:", e);
+    }
+    // --- Fix: Selectively Clear localStorage --- END ---
+
+    // Note: We are NOT attempting to delete the namespaced IndexedDB here,
+    // as it's complex and prone to 'blocked' errors.
+    // User can manually clear site data if needed.
+
+    // Finally, navigate to login page
+    navigate("/login");
   };
 
   const handleUserSelect = async (selectedUser) => {
@@ -1108,6 +1571,9 @@ export default function ChatPage() {
               status: "offline", // Assume offline initially, status updates needed separately
             },
           ],
+          is_group: false, // New 1-on-1 chats are not groups
+          group_name: null,
+          group_avatar_url: null,
         };
 
         // 5. Update State
@@ -1121,6 +1587,105 @@ export default function ChatPage() {
     } catch (err) {
       console.error("Error starting chat:", err);
       setError("Failed to start chat. " + err.message);
+    }
+  };
+
+  // Effect to fetch all users for the NewGroupModal
+  useEffect(() => {
+    const fetchAllUsers = async () => {
+      if (!currentUser?.id) return;
+      try {
+        const { data, error: fetchUsersError } = await supabase
+          .from("profiles")
+          .select("id, username, full_name, avatar_url")
+          .neq("id", currentUser.id); // Exclude current user from the list
+
+        if (fetchUsersError) throw fetchUsersError;
+        setAllUsers(data || []);
+      } catch (err) {
+        console.error("Error fetching all users:", err);
+        setError("Failed to load users for group creation.");
+        setAllUsers([]); // Ensure allUsers is an empty array on error
+      }
+    };
+
+    fetchAllUsers();
+  }, [currentUser?.id]);
+
+  const handleCreateGroup = async ({ name: groupName, memberIds }) => {
+    if (!currentUser || !profile) {
+      setError("Current user or profile not loaded. Cannot create group.");
+      return;
+    }
+    if (!groupName || memberIds.length === 0) {
+      setError("Group name and at least one member are required.");
+      return;
+    }
+
+    setIsNewGroupModalOpen(false); // Close modal immediately
+    setLoadingConversations(true); // Indicate loading for sidebar update
+    setError(null);
+
+    try {
+      // 1. Create a conversation row with is_group: true
+      const { data: convData, error: convInsertError } = await supabase
+        .from("conversations")
+        .insert({ is_group: true, group_name: groupName })
+        .select()
+        .single();
+
+      if (convInsertError) throw convInsertError;
+      const newConversationId = convData.id;
+
+      // 2. Add all selected users + yourself as participants
+      const participantObjects = memberIds.map((id) => ({
+        conversation_id: newConversationId,
+        profile_id: id,
+      }));
+      participantObjects.push({
+        conversation_id: newConversationId,
+        profile_id: currentUser.id,
+      });
+
+      const { error: participantInsertError } = await supabase
+        .from("conversation_participants")
+        .insert(participantObjects);
+
+      if (participantInsertError) throw participantInsertError;
+
+      // 3. Construct new group object for UI state (fetch full participant profiles)
+      // For simplicity now, we'll use the IDs and current user's profile.
+      // A more robust solution would fetch all participant profiles here.
+      const groupParticipantsProfiles = [
+        profile, // Current user's profile
+        ...allUsers.filter((u) => memberIds.includes(u.id)),
+      ];
+
+      const newGroupForState = {
+        id: newConversationId,
+        name: groupName, // Sidebar name will be group name
+        lastMessage: "Group created",
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        unread: 0,
+        avatar: null, // Placeholder for group avatar, using default
+        participants: groupParticipantsProfiles,
+        is_group: true,
+        group_name: groupName,
+        group_avatar_url: null, // Default group avatar
+      };
+
+      // 4. Update State
+      setConversations((prev) => [newGroupForState, ...prev]);
+      setSelectedConversation(newGroupForState);
+      setError(null);
+    } catch (err) {
+      console.error("Error creating group:", err);
+      setError(`Failed to create group: ${err.message}`);
+    } finally {
+      setLoadingConversations(false);
     }
   };
 
@@ -1164,7 +1729,7 @@ export default function ChatPage() {
                 <MessageSquare className="h-5 w-5 text-emerald-400" />
                 <h1 className="font-bold text-white">Messages</h1>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-1">
                 <Dialog
                   open={isNewChatModalOpen}
                   onOpenChange={setIsNewChatModalOpen}
@@ -1173,6 +1738,7 @@ export default function ChatPage() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      title="Start new 1-on-1 chat"
                       className="text-slate-400 hover:text-white"
                     >
                       <Plus className="h-5 w-5" />
@@ -1181,6 +1747,28 @@ export default function ChatPage() {
                   <NewChatModal
                     currentUser={currentUser}
                     onUserSelect={handleUserSelect}
+                    onOpenChange={setIsNewChatModalOpen}
+                  />
+                </Dialog>
+                <Dialog
+                  open={isNewGroupModalOpen}
+                  onOpenChange={setIsNewGroupModalOpen}
+                >
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="Create new group chat"
+                      className="text-slate-400 hover:text-white"
+                    >
+                      <Users className="h-5 w-5" />
+                    </Button>
+                  </DialogTrigger>
+                  <NewGroupModal
+                    allUsers={allUsers}
+                    currentUser={currentUser}
+                    onCreate={handleCreateGroup}
+                    onOpenChange={setIsNewGroupModalOpen}
                   />
                 </Dialog>
                 {isMobile && (
@@ -1226,11 +1814,23 @@ export default function ChatPage() {
                     <div className="flex items-center gap-3">
                       <Avatar>
                         <AvatarImage
-                          src={conv.avatar || "/placeholder.svg"}
-                          alt={conv.name}
+                          src={
+                            conv.is_group
+                              ? conv.group_avatar_url ||
+                                "/group-placeholder.svg"
+                              : conv.avatar || "/placeholder.svg"
+                          }
+                          alt={
+                            conv.is_group
+                              ? conv.group_name || "Group"
+                              : conv.name
+                          }
                         />
                         <AvatarFallback className="bg-emerald-500 text-white">
-                          {conv.name
+                          {(conv.is_group
+                            ? conv.group_name || "Group"
+                            : conv.name
+                          )
                             ?.split(" ")
                             .map((n) => n[0])
                             .join("") || "??"}
@@ -1239,7 +1839,9 @@ export default function ChatPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-center">
                           <h3 className="font-medium text-white truncate">
-                            {conv.name}
+                            {conv.is_group
+                              ? conv.group_name || "Unnamed Group"
+                              : conv.name}
                           </h3>
                           <span className="text-xs text-slate-400">
                             {conv.time}
@@ -1333,19 +1935,35 @@ export default function ChatPage() {
               <>
                 <Avatar>
                   <AvatarImage
-                    src={selectedConversation.avatar || "/placeholder.svg"}
-                    alt={selectedConversation.name}
+                    src={
+                      selectedConversation.is_group
+                        ? selectedConversation.group_avatar_url ||
+                          "/group-placeholder.svg"
+                        : selectedConversation.avatar || "/placeholder.svg"
+                    }
+                    alt={
+                      selectedConversation.is_group
+                        ? selectedConversation.group_name || "Group Chat"
+                        : selectedConversation.name
+                    }
                   />
                   <AvatarFallback className="bg-emerald-500 text-white">
-                    {selectedConversation.name
-                      ?.split(" ")
-                      .map((n) => n[0])
-                      .join("") || "??"}
+                    {selectedConversation.is_group
+                      ? (selectedConversation.group_name || "Group")
+                          .split(" ")
+                          .map((w) => w[0])
+                          .join("")
+                      : selectedConversation.name
+                          ?.split(" ")
+                          .map((n) => n[0])
+                          .join("") || "??"}
                   </AvatarFallback>
                 </Avatar>
                 <div>
                   <h2 className="font-medium text-white">
-                    {selectedConversation.name}
+                    {selectedConversation.is_group
+                      ? selectedConversation.group_name || "Unnamed Group"
+                      : selectedConversation.name}
                   </h2>
                   <p className="text-xs text-slate-400">Online</p>
                 </div>
@@ -1358,69 +1976,199 @@ export default function ChatPage() {
             )}
           </div>
 
-          {/* More Options Sheet */}
-          <Sheet>
-            <SheetTrigger asChild disabled={!selectedConversation}>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-slate-400 hover:text-white disabled:opacity-50"
-              >
-                <MoreVertical className="h-5 w-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent className="bg-slate-800 border-slate-700 text-white">
-              <div className="space-y-4 py-4">
-                <div className="flex flex-col items-center gap-2 pb-4 border-b border-slate-700">
-                  <Avatar className="h-20 w-20">
-                    <AvatarImage
-                      src={selectedConversation?.avatar || "/placeholder.svg"}
-                      alt={selectedConversation?.name}
-                    />
-                    <AvatarFallback className="bg-emerald-500 text-white text-xl">
-                      {selectedConversation?.name
-                        ?.split(" ")
-                        .map((n) => n[0])
-                        .join("") || "??"}
-                    </AvatarFallback>
-                  </Avatar>
-                  <h3 className="text-xl font-bold">
-                    {selectedConversation?.name}
-                  </h3>
-                  <p className="text-sm text-slate-400">Online</p>
-                </div>
+          {/* More Options Sheet - Conditionally render if selectedConversation exists */}
+          {selectedConversation && (
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-slate-400 hover:text-white"
+                >
+                  <MoreVertical className="h-5 w-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent className="bg-slate-800 border-slate-700 text-white">
+                <div className="space-y-4 py-4">
+                  <div className="flex flex-col items-center gap-2 pb-4 border-b border-slate-700">
+                    <Avatar className="h-20 w-20">
+                      <AvatarImage
+                        src={
+                          selectedConversation?.is_group
+                            ? selectedConversation?.group_avatar_url ||
+                              "/group-placeholder.svg"
+                            : selectedConversation?.avatar || "/placeholder.svg"
+                        }
+                        alt={
+                          selectedConversation?.is_group
+                            ? selectedConversation?.group_name || "Group Chat"
+                            : selectedConversation?.name
+                        }
+                      />
+                      <AvatarFallback className="bg-emerald-500 text-white text-xl">
+                        {(selectedConversation?.is_group
+                          ? selectedConversation?.group_name || "Group"
+                          : selectedConversation?.name
+                        )
+                          ?.split(" ")
+                          .map((n) => n[0])
+                          .join("") || "??"}
+                      </AvatarFallback>
+                    </Avatar>
+                    <h3 className="text-xl font-bold">
+                      {selectedConversation?.is_group
+                        ? selectedConversation?.group_name || "Unnamed Group"
+                        : selectedConversation?.name}
+                    </h3>
+                    <p className="text-sm text-slate-400">Online</p>
+                  </div>
 
-                <div className="space-y-2">
-                  <h4 className="text-sm font-medium text-slate-400">
-                    Options
-                  </h4>
-                  <div className="space-y-1">
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-white"
-                    >
-                      <User className="mr-2 h-4 w-4" />
-                      View Profile
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-white"
-                    >
-                      <MessageSquare className="mr-2 h-4 w-4" />
-                      Search in Conversation
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-900/20"
-                    >
-                      <LogOut className="mr-2 h-4 w-4" />
-                      Delete Conversation
-                    </Button>
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-medium text-slate-400">
+                      Options
+                    </h4>
+                    <div className="space-y-1">
+                      <Button
+                        variant="ghost"
+                        className="w-full justify-start text-white"
+                      >
+                        <User className="mr-2 h-4 w-4" />
+                        View Profile
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="w-full justify-start text-white"
+                      >
+                        <MessageSquare className="mr-2 h-4 w-4" />
+                        Search in Conversation
+                      </Button>
+                      {selectedConversation?.is_group && (
+                        <Button
+                          variant="ghost"
+                          className="w-full justify-start text-white"
+                          onClick={async () => {
+                            const newName = window.prompt(
+                              "Enter a new group name:",
+                              selectedConversation?.group_name || ""
+                            );
+                            if (
+                              !newName ||
+                              newName === selectedConversation?.group_name
+                            )
+                              return;
+                            setIsRenamingGroup(true);
+                            setError(null);
+                            try {
+                              await post(
+                                `/conversations/${selectedConversation?.id}`,
+                                {
+                                  group_name: newName,
+                                }
+                              );
+                              // Optimistically update UI
+                              setSelectedConversation((c) => ({
+                                ...c,
+                                group_name: newName,
+                                name: newName,
+                              }));
+                              setConversations((list) =>
+                                list.map((c) =>
+                                  c.id === selectedConversation?.id
+                                    ? {
+                                        ...c,
+                                        name: newName,
+                                        group_name: newName,
+                                      }
+                                    : c
+                                )
+                              );
+                            } catch (err) {
+                              console.error("Error renaming group:", err);
+                              setError(
+                                `Failed to rename group: ${err.message}`
+                              );
+                            } finally {
+                              setIsRenamingGroup(false);
+                            }
+                          }}
+                          disabled={
+                            isRenamingGroup || !selectedConversation?.id
+                          }
+                        >
+                          <Pencil className="mr-2 h-4 w-4" />
+                          {isRenamingGroup ? "Renaming..." : "Rename Group"}
+                        </Button>
+                      )}
+                      {selectedConversation?.is_group && (
+                        <Button
+                          variant="ghost"
+                          className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-900/20"
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                "Are you sure you want to leave this group? You'll have to be re-invited to participate again."
+                              )
+                            )
+                              return;
+
+                            setIsLeavingGroup(true);
+                            setError(null);
+                            try {
+                              const { error: deleteError } = await supabase
+                                .from("conversation_participants")
+                                .delete()
+                                .match({
+                                  conversation_id: selectedConversation?.id,
+                                  profile_id: currentUser?.id,
+                                });
+
+                              if (deleteError) throw deleteError;
+
+                              // Remove from local state & navigate away
+                              setConversations((list) =>
+                                list.filter(
+                                  (c) => c.id !== selectedConversation?.id
+                                )
+                              );
+                              setSelectedConversation(null);
+                              // navigate("/chat"); // Decided to keep user on the page
+                            } catch (err) {
+                              console.error("Error leaving group:", err);
+                              setError(`Failed to leave group: ${err.message}`);
+                            } finally {
+                              setIsLeavingGroup(false);
+                            }
+                          }}
+                          disabled={
+                            isLeavingGroup ||
+                            !selectedConversation?.id ||
+                            !currentUser?.id
+                          }
+                        >
+                          <LogOut className="mr-2 h-4 w-4" />
+                          {isLeavingGroup ? "Leaving..." : "Leave Group"}
+                        </Button>
+                      )}
+                      {/* Conditionally render Delete Conversation only if NOT a group and functionality is intended */}
+                      {/* For now, completely hiding if not a group, as 1-on-1 delete is not implemented */}
+                      {/* 
+                      {!selectedConversation.is_group && (
+                        <Button
+                          variant="ghost"
+                          className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-900/20"
+                          onClick={() => alert("Delete 1-on-1 conversation (not implemented yet)")} 
+                        >
+                          <LogOut className="mr-2 h-4 w-4" />
+                          Delete Conversation
+                        </Button>
+                      )}
+                      */}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </SheetContent>
-          </Sheet>
+              </SheetContent>
+            </Sheet>
+          )}
         </div>
 
         {/* Messages Area */}
@@ -1500,7 +2248,11 @@ export default function ChatPage() {
                         )}
                       </p>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1 ${message.isSelf ? 'text-left' : 'text-right'}">
+                    <p
+                      className={`text-xs text-slate-400 mt-1 ${
+                        message.isSelf ? "text-right" : "text-left"
+                      }`}
+                    >
                       {message.timestamp}
                     </p>
                   </div>
