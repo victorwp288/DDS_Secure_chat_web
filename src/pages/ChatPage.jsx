@@ -292,6 +292,78 @@ async function safeProcessPreKey(store, userId, deviceId, bundle) {
 }
 // --- NEW HELPER FUNCTION --- END ---
 
+// --- Helper function to fetch and format a single conversation --- START ---
+async function fetchAndFormatSingleConversation(
+  conversationId,
+  currentProfileId,
+  supabaseClient
+) {
+  try {
+    const { data: convData, error: convError } = await supabaseClient
+      .from("conversations")
+      .select(
+        `id, created_at, is_group, group_name, group_avatar_url, conversation_participants(profile_id, status, profiles(id, username, full_name, avatar_url, status))`
+      )
+      .eq("id", conversationId)
+      .single(); // Expecting a single conversation
+
+    if (convError) throw convError;
+    if (!convData) return null; // Conversation not found
+
+    const participants = convData.conversation_participants.map(
+      (p) => p.profiles
+    );
+    const otherParticipant =
+      participants.find((p) => p.id !== currentProfileId) || participants[0]; // Fallback for groups or if current user is somehow the only one listed
+    const isGroup = convData.is_group;
+
+    // --- MODIFICATION: Get my_status and peer_status ---
+    const myParticipantEntry = convData.conversation_participants.find(
+      (p) => p.profile_id === currentProfileId
+    );
+    const myStatus = myParticipantEntry?.status || "accepted"; // Default for safety
+
+    let peerStatus = "accepted"; // Default for groups or if not applicable
+    if (!isGroup) {
+      const otherParticipantEntry = convData.conversation_participants.find(
+        (p) => p.profile_id !== currentProfileId
+      );
+      peerStatus = otherParticipantEntry?.status || "pending"; // Default to pending for 1-on-1 if not found
+    }
+    // --- END MODIFICATION ---
+
+    return {
+      id: convData.id,
+      name: isGroup
+        ? convData.group_name || "Unnamed Group"
+        : otherParticipant?.full_name ||
+          otherParticipant?.username ||
+          "Unknown User",
+      lastMessage: "...", // Placeholder, as this is a new conversation
+      time: "", // Placeholder
+      unread: 0,
+      avatar: isGroup
+        ? convData.group_avatar_url
+        : otherParticipant?.avatar_url,
+      participants,
+      is_group: isGroup,
+      group_name: convData.group_name,
+      group_avatar_url: convData.group_avatar_url,
+      // --- MODIFICATION: Add statuses to returned object ---
+      my_status: myStatus,
+      peer_status: peerStatus,
+      // --- END MODIFICATION ---
+    };
+  } catch (error) {
+    console.error(
+      `[fetchAndFormatSingleConversation] Error fetching conversation ${conversationId}:`,
+      error
+    );
+    return null;
+  }
+}
+// --- Helper function to fetch and format a single conversation --- END ---
+
 export default function ChatPage() {
   console.log("--- ChatPage Component Rendering ---");
 
@@ -333,6 +405,13 @@ export default function ChatPage() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  // derive once – **never** set state while rendering
+  const chatInactive =
+    selectedConversation &&
+    !selectedConversation.is_group &&
+    (selectedConversation.my_status !== "accepted" ||
+      selectedConversation.peer_status !== "accepted");
 
   // 1. Get current user and profile
   useEffect(() => {
@@ -428,17 +507,36 @@ export default function ChatPage() {
         const { data: convData, error: convError } = await supabase
           .from("conversations")
           .select(
-            `id, created_at, is_group, group_name, group_avatar_url, conversation_participants(profile_id, profiles(id, username, full_name, avatar_url, status))`
+            // Modified to select status from conversation_participants
+            `id, created_at, is_group, group_name, group_avatar_url, conversation_participants(profile_id, status, profiles(id, username, full_name, avatar_url, status))`
           )
           .in("id", conversationIds);
         if (convError) throw convError;
         const formattedConversations = convData.map((conv) => {
-          const participants = conv.conversation_participants.map(
-            (p) => p.profiles
+          const participantsFromDb = conv.conversation_participants;
+          // Find the current user's participant entry to get their status
+          const myParticipantEntry = participantsFromDb.find(
+            (p) => p.profile_id === profile.id
           );
+          const myStatusInConversation =
+            myParticipantEntry?.status || "accepted"; // Default to accepted if not found
+
+          const participants = participantsFromDb.map((p) => p.profiles);
           const otherParticipant =
             participants.find((p) => p.id !== profile.id) || participants[0];
           const isGroup = conv.is_group;
+
+          // --- MODIFICATION: Determine peer_status ---
+          let peerStatusInConversation = "accepted"; // Default for groups
+          if (!isGroup) {
+            const otherParticipantEntryFromDb = participantsFromDb.find(
+              (p) => p.profile_id !== profile.id
+            );
+            peerStatusInConversation =
+              otherParticipantEntryFromDb?.status || "pending"; // Default to pending for 1-on-1 if no explicit status
+          }
+          // --- END MODIFICATION ---
+
           return {
             id: conv.id,
             name: isGroup
@@ -456,6 +554,8 @@ export default function ChatPage() {
             is_group: isGroup,
             group_name: conv.group_name,
             group_avatar_url: conv.group_avatar_url,
+            my_status: myStatusInConversation, // Added current user's status
+            peer_status: peerStatusInConversation, // --- MODIFICATION: Add peer_status ---
           };
         });
         setConversations(formattedConversations);
@@ -484,7 +584,20 @@ export default function ChatPage() {
       // setMessages([]); // <-- REMOVED THIS LINE
       return;
     }
-    // --- MODIFIED: Remove setMessages([]) from guard --- END ---
+
+    if (
+      !selectedConversation?.id ||
+      !currentUser?.id ||
+      (!selectedConversation.is_group &&
+        selectedConversation.my_status === "pending") || // Don't fetch for pending 1-on-1
+      (!selectedConversation.is_group &&
+        selectedConversation.my_status === "rejected") // Don't fetch for rejected 1-on-1
+    ) {
+      setMessages([]); // Keep clearing if conversation/user is invalid or status is pending/rejected for 1-on-1
+      setLoadingMessages(false); // Ensure loading is false
+      return;
+    }
+    // --- MODIFIED: Use primitive deviceId in dependencies, remove sig --- END ---
     // const { signalStore, deviceId } = sig; // Already destructured above
     if (!selectedConversation?.id || !currentUser?.id) {
       setMessages([]); // Keep clearing if conversation/user is invalid
@@ -983,6 +1096,14 @@ export default function ChatPage() {
       return;
     }
 
+    // Ensure current user context is available for handleNewMessage
+    if (!currentUserRef.current) {
+      console.warn(
+        "[Realtime Effect] Current user not yet available for message subscription setup."
+      );
+      return;
+    }
+
     if (messageSubscription) {
       console.log(
         `[Realtime Effect] Explicitly unsubscribing existing messageSubscription (topic: ${messageSubscription.topic}) before creating new one for conv ${selectedConversation.id}.`
@@ -1026,13 +1147,199 @@ export default function ChatPage() {
       );
       chan.unsubscribe();
     };
-  }, [selectedConversation?.id, isReady]);
+    // Dependencies for message subscription: selectedConversation.id, isReady, and potentially sig/handleNewMessage if they change.
+    // Given handleNewMessage uses refs and sig, and is defined outside, this might need useCallback for handleNewMessage if issues arise.
+    // For now, sticking to the original dependencies that focus on the trigger (selected conv) and readiness.
+  }, [selectedConversation?.id, isReady, sig]); // Added sig back as per original code structure post-review for handleNewMessage dependency
+
+  // 6. Realtime subscription for NEW conversations added to the list
+  useEffect(() => {
+    if (!profile?.id) {
+      return;
+    }
+
+    const handleNewConversationParticipantInsert = async (payload) => {
+      console.log(
+        "[Realtime ConvList] New conversation_participant insert:",
+        payload
+      );
+      const newParticipantEntry = payload.new;
+      // Ensure the insert is for the current user, not someone else in a group they are already in.
+      if (newParticipantEntry.profile_id !== profile.id) {
+        return;
+      }
+
+      const newConversationId = newParticipantEntry.conversation_id;
+
+      // Check if conversation already exists in state to prevent duplicates
+      // Accessing `conversations` via a functional update to `setConversations` or from a ref
+      // is safer than relying on `conversations` from the closure if it's a dependency.
+      // However, having `conversations` in deps for the check is okay.
+      if (conversations.some((conv) => conv.id === newConversationId)) {
+        console.log(
+          `[Realtime ConvList] Conversation ${newConversationId} already in list. Skipping.`
+        );
+        return;
+      }
+
+      const newConversation = await fetchAndFormatSingleConversation(
+        newConversationId,
+        profile.id,
+        supabase // Pass the supabase client instance
+      );
+
+      if (newConversation) {
+        setConversations((prevConversations) => {
+          // Final check for duplicates before adding to state
+          if (prevConversations.some((c) => c.id === newConversation.id)) {
+            return prevConversations;
+          }
+          console.log(
+            "[Realtime ConvList] Adding new conversation to state:",
+            newConversation
+          );
+          return [newConversation, ...prevConversations]; // Add to the beginning
+        });
+      }
+    };
+
+    const conversationListChannel = supabase
+      .channel(`conv-list-updates:${profile.id}`) // Unique channel name per user
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "conversation_participants",
+          filter: `profile_id=eq.${profile.id}`,
+        },
+        handleNewConversationParticipantInsert
+      )
+      // UPDATE → my status flipped from 'pending' → 'accepted' | 'rejected'
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "conversation_participants",
+          filter: `profile_id=eq.${profile.id}`,
+        },
+        async ({ new: row }) => {
+          // This is an update to MY status in a conversation
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === row.conversation_id ? { ...c, my_status: row.status } : c
+            )
+          );
+
+          // If MY status for the currently selected 1-on-1 chat becomes 'rejected'
+          if (
+            row.status === "rejected" &&
+            selectedConversationRef.current?.id === row.conversation_id &&
+            !selectedConversationRef.current?.is_group // Ensure it's a 1-on-1
+          ) {
+            // The selectedConversation state will be updated via the setConversations map
+            // and then if it's still selected, its my_status will be 'rejected'.
+            // The UI (disabled input, banner) should react to this.
+            // No need to setSelectedConversation(null) or set global error.
+            // The conversation, if I'm the one who got rejected or rejected it myself,
+            // should disappear from the list on next re-render due to the filter.
+            // If the user is currently viewing it, the banner for my_status === 'rejected' will show.
+            console.warn(
+              `[Realtime my_status update] My status for selected chat ${row.conversation_id} changed to rejected. UI should update.`
+            );
+          }
+        }
+      )
+      // --- MODIFICATION: Add a new listener for updates to the PEER's status in the currently selected 1-on-1 chat ---
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "conversation_participants",
+          // No direct filter on profile_id here, we filter in the callback
+          // Filter by conversation_id if possible, but selectedConversation might change.
+          // A broader listener and client-side filtering is safer if conv_id filter isn't dynamic.
+          // For now, listening to all updates on the table and filtering client-side:
+        },
+        async ({ new: row }) => {
+          const currentSelectedConv = selectedConversationRef.current;
+          // Check if the update is for the PEER in the CURRENTLY SELECTED 1-on-1 conversation
+          if (
+            currentSelectedConv &&
+            !currentSelectedConv.is_group &&
+            currentSelectedConv.id === row.conversation_id &&
+            row.profile_id !== profile.id // Update is for the other user
+          ) {
+            console.log(
+              `[Realtime ConvList UPDATE] Peer status updated for conv ${row.conversation_id}. New peer status: ${row.status}`
+            );
+            setConversations((prevConvs) =>
+              prevConvs.map((c) =>
+                c.id === row.conversation_id
+                  ? { ...c, peer_status: row.status }
+                  : c
+              )
+            );
+            // Also update the selectedConversation directly if it's the one being viewed
+            setSelectedConversation((prevSelConv) =>
+              prevSelConv && prevSelConv.id === row.conversation_id
+                ? { ...prevSelConv, peer_status: row.status }
+                : prevSelConv
+            );
+          }
+        }
+      )
+      // --- END MODIFICATION ---
+      .subscribe((status, err) => {
+        if (err) {
+          console.error(
+            `[Realtime ConvList] Subscription ERROR for ${profile.id}:`,
+            err
+          );
+        } else {
+          console.log(
+            `[Realtime ConvList] Subscription status for ${profile.id}: ${status}`
+          );
+        }
+      });
+
+    return () => {
+      console.log(
+        `[Realtime ConvList Cleanup] Unsubscribing for ${profile?.id}`
+      );
+      if (conversationListChannel) {
+        supabase.removeChannel(conversationListChannel);
+      }
+    };
+    // Dependencies: profile.id to re-subscribe if user changes.
+    // `conversations` to ensure the `some` check inside the handler uses the latest list.
+    // `supabase` client is stable, so not strictly needed if it's the global import.
+  }, [profile?.id, conversations, supabase]);
 
   const handleSendMessage = async () => {
     if (!isReady) {
       setError("Secure session not ready.");
       return;
     }
+    // --- MODIFICATION: Remove check that was setting error in render path ---
+    // The `chatInactive` variable, checked below, handles disabling UI elements and showing banners for inactive chats.
+    // The problematic block that was here previously, which called setError during render, is now fully removed.
+    // --- END MODIFICATION ---
+
+    // Check if the chat is inactive (using the derived boolean)
+    // This check is now for sanity and to prevent sending, not to set global error.
+    if (chatInactive) {
+      console.warn(
+        "[handleSendMessage] Attempted to send message in an inactive chat. Aborting."
+      );
+      // Optionally, set a very brief, non-global, non-crashing notification here if needed,
+      // but the UI should already indicate this through disabled inputs/banners.
+      // For now, just preventing the send operation.
+      return;
+    }
+
     if (
       (!newMessage.trim() && !selectedFile) ||
       !selectedConversation ||
@@ -1548,12 +1855,20 @@ export default function ChatPage() {
         const newConversationId = newConvData.id;
         console.log("Created new conversation with ID:", newConversationId);
 
-        // 3. Add Participants
+        // 3. Add Participants with appropriate status
         const { error: participantInsertError } = await supabase
           .from("conversation_participants")
           .insert([
-            { conversation_id: newConversationId, profile_id: currentUser.id },
-            { conversation_id: newConversationId, profile_id: selectedUser.id },
+            {
+              conversation_id: newConversationId,
+              profile_id: currentUser.id,
+              status: "accepted",
+            }, // Initiator is accepted
+            {
+              conversation_id: newConversationId,
+              profile_id: selectedUser.id,
+              status: "pending",
+            }, // Recipient is pending
           ]);
 
         if (participantInsertError) throw participantInsertError;
@@ -1726,6 +2041,70 @@ export default function ChatPage() {
     );
   }
 
+  // Handler to accept a conversation invitation
+  const handleAcceptConversation = async (conversationId) => {
+    if (!currentUser?.id || !supabase) return;
+
+    try {
+      const { error } = await supabase
+        .from("conversation_participants")
+        .update({ status: "accepted" })
+        .match({ conversation_id: conversationId, profile_id: currentUser.id });
+
+      if (error) throw error;
+
+      // Update local state and capture the updated conversation for selection
+      let updatedConvForSelection = null;
+      setConversations((prevConversations) =>
+        prevConversations.map((conv) => {
+          if (conv.id === conversationId) {
+            updatedConvForSelection = { ...conv, my_status: "accepted" };
+            return updatedConvForSelection;
+          }
+          return conv;
+        })
+      );
+
+      // Optionally, select the conversation after accepting, using the updated object
+      if (updatedConvForSelection) {
+        setSelectedConversation(updatedConvForSelection);
+      }
+    } catch (err) {
+      console.error("Error accepting conversation:", err);
+      setError(`Failed to accept chat: ${err.message}`);
+    }
+  };
+
+  // Handler to reject a conversation invitation
+  const handleRejectConversation = async (conversationId) => {
+    if (!currentUser?.id || !supabase) return;
+
+    try {
+      const { error } = await supabase
+        .from("conversation_participants")
+        .update({ status: "rejected" })
+        .match({ conversation_id: conversationId, profile_id: currentUser.id });
+
+      if (error) throw error;
+
+      // Update local state - for now, just update status. UI will hide buttons.
+      // Alternatively, filter it out:
+      // setConversations(prev => prev.filter(conv => conv.id !== conversationId));
+      setConversations((prevConversations) =>
+        prevConversations.map((conv) =>
+          conv.id === conversationId ? { ...conv, my_status: "rejected" } : conv
+        )
+      );
+      // If this was the selected conversation, clear it
+      if (selectedConversationRef.current?.id === conversationId) {
+        setSelectedConversation(null);
+      }
+    } catch (err) {
+      console.error("Error rejecting conversation:", err);
+      setError(`Failed to reject chat: ${err.message}`);
+    }
+  };
+
   // Main component JSX, ensure sig.deviceId is used where myDeviceIdForJSX was used
   return (
     <div className="flex h-screen bg-slate-900">
@@ -1734,8 +2113,9 @@ export default function ChatPage() {
         <AnimatePresence>
           <div
             className={`${
+              // Main sidebar div
               isMobile ? "absolute z-10 w-full max-w-xs" : "w-80"
-            } h-full bg-slate-800 border-r border-slate-700 flex flex-col`}
+            } h-full bg-slate-800 border-r border-slate-700 flex flex-col overflow-hidden`} // Added overflow-hidden
           >
             {/* Header */}
             <div className="p-4 border-b border-slate-700 flex items-center justify-between">
@@ -1812,69 +2192,111 @@ export default function ChatPage() {
             </div>
 
             {/* Chat List Area */}
-            <ScrollArea className="flex-1">
+            <ScrollArea className="flex-1 min-h-0">
+              {" "}
+              {/* Added min-h-0 here */}
               <div className="p-2">
-                {conversations.map((conv) => (
-                  <div
-                    key={conv.id}
-                    className={`p-3 rounded-lg cursor-pointer mb-1 hover:bg-slate-700/50 ${
-                      selectedConversation?.id === conv.id ? "bg-slate-700" : ""
-                    }`}
-                    onClick={() => {
-                      setSelectedConversation(conv);
-                      if (isMobile) setIsMobileMenuOpen(false);
-                    }}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Avatar>
-                        <AvatarImage
-                          src={
-                            conv.is_group
-                              ? conv.group_avatar_url ||
-                                "/group-placeholder.svg"
-                              : conv.avatar || "/placeholder.svg"
-                          }
-                          alt={
-                            conv.is_group
+                {conversations
+                  .filter((conv) => {
+                    if (conv.is_group) return true; // groups always visible
+                    // Show 1-on-1 chats as long as MY status is not 'rejected'
+                    return conv.my_status !== "rejected";
+                  })
+                  .map((conv) => (
+                    <div
+                      key={conv.id}
+                      className={`p-3 rounded-lg cursor-pointer mb-1 hover:bg-slate-700/50 ${
+                        selectedConversation?.id === conv.id
+                          ? "bg-slate-700"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        setError(null); // Clear any existing global error
+                        setSelectedConversation(conv);
+                        if (isMobile) setIsMobileMenuOpen(false);
+                      }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Avatar>
+                          <AvatarImage
+                            src={
+                              conv.is_group
+                                ? conv.group_avatar_url ||
+                                  "/group-placeholder.svg"
+                                : conv.avatar || "/placeholder.svg"
+                            }
+                            alt={
+                              conv.is_group
+                                ? conv.group_name || "Group"
+                                : conv.name
+                            }
+                          />
+                          <AvatarFallback className="bg-emerald-500 text-white">
+                            {(conv.is_group
                               ? conv.group_name || "Group"
                               : conv.name
-                          }
-                        />
-                        <AvatarFallback className="bg-emerald-500 text-white">
-                          {(conv.is_group
-                            ? conv.group_name || "Group"
-                            : conv.name
-                          )
-                            ?.split(" ")
-                            .map((n) => n[0])
-                            .join("") || "??"}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-center">
-                          <h3 className="font-medium text-white truncate">
-                            {conv.is_group
-                              ? conv.group_name || "Unnamed Group"
-                              : conv.name}
-                          </h3>
-                          <span className="text-xs text-slate-400">
-                            {conv.time}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <p className="text-sm text-slate-400 truncate">
-                            {conv.lastMessage}
-                          </p>
-                          {conv.unread > 0 && (
-                            <span className="bg-emerald-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                              {conv.unread}
+                            )
+                              ?.split(" ")
+                              .map((n) => n[0])
+                              .join("") || "??"}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-center">
+                            <h3 className="font-medium text-white truncate">
+                              {conv.is_group
+                                ? conv.group_name || "Unnamed Group"
+                                : conv.name}
+                            </h3>
+                            <span className="text-xs text-slate-400">
+                              {conv.time}
                             </span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <p className="text-sm text-slate-400 truncate">
+                              {conv.lastMessage}
+                            </p>
+                            {conv.unread > 0 && (
+                              <span className="bg-emerald-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                                {conv.unread}
+                              </span>
+                            )}
+                          </div>
+                          {/* START: Accept/Reject Buttons for pending 1-on-1 chats */}
+                          {!conv.is_group && conv.my_status === "pending" && (
+                            <div className="mt-2 flex gap-2">
+                              <Button
+                                size="sm"
+                                className="bg-green-500 hover:bg-green-600 text-xs h-7 flex-1"
+                                onClick={(e) => {
+                                  e.stopPropagation(); // Prevent selecting the conversation
+                                  // TODO: Implement accept logic
+                                  // alert(`Accepted chat with ${conv.name}`);
+                                  handleAcceptConversation(conv.id);
+                                }}
+                              >
+                                Accept
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="bg-red-500 hover:bg-red-600 text-xs h-7 flex-1"
+                                onClick={(e) => {
+                                  e.stopPropagation(); // Prevent selecting the conversation
+                                  // TODO: Implement reject logic
+                                  // alert(`Rejected chat with ${conv.name}`);
+                                  handleRejectConversation(conv.id);
+                                }}
+                              >
+                                Reject
+                              </Button>
+                            </div>
                           )}
+                          {/* END: Accept/Reject Buttons */}
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             </ScrollArea>
 
@@ -2186,7 +2608,9 @@ export default function ChatPage() {
         </div>
 
         {/* Messages Area */}
-        <ScrollArea className="flex-1 p-4 bg-gradient-to-b from-slate-900 to-slate-800">
+        <ScrollArea className="flex-1 p-4 bg-gradient-to-b from-slate-900 to-slate-800 min-h-0">
+          {" "}
+          {/* Added min-h-0 here */}
           <div className="space-y-4">
             {loadingMessages && (
               <div className="text-center text-slate-400 py-4">
@@ -2279,6 +2703,40 @@ export default function ChatPage() {
                   No messages yet. Start the conversation!
                 </div>
               )}
+            {!loadingMessages &&
+              chatInactive && // Use chatInactive
+              selectedConversation && // Ensure selectedConversation exists
+              !selectedConversation.is_group && (
+                <>
+                  {selectedConversation.my_status === "accepted" &&
+                    selectedConversation.peer_status === "pending" && (
+                      <div className="text-center text-slate-500 pt-10">
+                        Waiting for the other user to accept your chat request…
+                      </div>
+                    )}
+
+                  {selectedConversation.my_status === "pending" && (
+                    <div className="text-center text-slate-500 pt-10">
+                      This user invited you to chat. Choose <b>Accept</b> or{" "}
+                      <b>Reject</b>
+                      in the sidebar.
+                    </div>
+                  )}
+
+                  {selectedConversation.my_status === "rejected" && (
+                    <div className="text-center text-slate-500 pt-10">
+                      This chat request was declined.
+                    </div>
+                  )}
+
+                  {selectedConversation.my_status === "accepted" && // I accepted/sent it
+                    selectedConversation.peer_status === "rejected" && ( // But the peer rejected
+                      <div className="text-center text-slate-500 pt-10">
+                        This chat request was declined by the other user.
+                      </div>
+                    )}
+                </>
+              )}
             <div ref={messagesEndRef} />
           </div>
           {!selectedConversation && !loadingConversations && (
@@ -2319,7 +2777,10 @@ export default function ChatPage() {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               disabled={
-                !selectedConversation || loadingConversations || !isReady
+                !selectedConversation ||
+                loadingConversations ||
+                !isReady ||
+                chatInactive // This now covers all inactive 1-on-1 scenarios
               }
             />
             <Button
@@ -2339,7 +2800,8 @@ export default function ChatPage() {
                 (!newMessage.trim() && !selectedFile) ||
                 !selectedConversation ||
                 loadingConversations ||
-                !isReady
+                !isReady ||
+                chatInactive // This now covers all inactive 1-on-1 scenarios
               }
             >
               <Send className="h-5 w-5" />

@@ -1,15 +1,62 @@
 // api/device/register.js
+import { Buffer } from "buffer";
 import { supabaseAdmin } from "../_supabase.js";
 import { cors } from "../../lib/cors.js";
 
-// --- Helper to validate preKey shape ---
-function isValidPreKey(key) {
-  return (
-    key &&
-    typeof key.preKeyPublicKey === "string" &&
-    key.preKeyPublicKey.length > 0 // Basic non-empty check
-  );
+// --- NEW Robust publicKey extraction function (and helper) --- START ---
+function bytesObjectToB64(obj) {
+  // Object.values gives us an array of the numeric byte values
+  return Buffer.from(Object.values(obj)).toString("base64");
 }
+
+function extractPublicKeyB64(k) {
+  // 1 – already a base-64 string
+  if (typeof k.publicKey === "string") return k.publicKey;
+
+  // 2 – Uint8Array / ArrayBuffer
+  if (k.publicKey instanceof Uint8Array) {
+    return Buffer.from(k.publicKey).toString("base64");
+  }
+  if (k.publicKey instanceof ArrayBuffer) {
+    // Ensure ArrayBuffer is correctly handled, often needs a Uint8Array view
+    return Buffer.from(new Uint8Array(k.publicKey)).toString("base64");
+  }
+
+  // 3 – 'publicKey' is that index→value object
+  if (
+    k.publicKey &&
+    typeof k.publicKey === "object" &&
+    !(k.publicKey instanceof Uint8Array) &&
+    !(k.publicKey instanceof ArrayBuffer)
+  ) {
+    // Added checks to ensure it's a plain object, not already a typed array
+    return bytesObjectToB64(k.publicKey);
+  }
+
+  // 4 – KeyHelper.generatePreKey style (keyPair.pubKey)
+  if (k.keyPair?.pubKey) {
+    const pk = k.keyPair.pubKey;
+    if (pk instanceof Uint8Array) return Buffer.from(pk).toString("base64");
+    if (pk instanceof ArrayBuffer)
+      return Buffer.from(new Uint8Array(pk)).toString("base64");
+    // Check if pk is an object of byte indices before calling bytesObjectToB64
+    if (
+      typeof pk === "object" &&
+      !(pk instanceof Uint8Array) &&
+      !(pk instanceof ArrayBuffer)
+    ) {
+      return bytesObjectToB64(pk);
+    }
+  }
+
+  // still couldn't recognise
+  console.warn(
+    "[extractPublicKeyB64] Could not recognize publicKey format for key:",
+    k
+  );
+  return undefined;
+}
+// --- NEW Robust publicKey extraction function (and helper) --- END ---
 
 export default cors(async function handler(req, res) {
   if (req.method !== "POST") {
@@ -17,7 +64,14 @@ export default cors(async function handler(req, res) {
     return res.status(405).end();
   }
 
-  // --- Accept preKeys array --- START ---
+  // Optional: Log the first preKey as it arrives, before normalization
+  // if (Array.isArray(preKeys) && preKeys.length) {
+  //   console.log(
+  //     "🔍 first preKey that reached server:",
+  //     JSON.stringify(preKeys[0], null, 2)
+  //   );
+  // }
+
   const {
     userId,
     deviceId: clientProvidedDeviceId,
@@ -28,9 +82,22 @@ export default cors(async function handler(req, res) {
     signedPreKeySignature,
     preKeys,
   } = req.body;
-  // --- Accept preKeys array --- END ---
 
   // --- Input Validation --- START ---
+  // MODIFIED: Robust normalization and filtering for preKeys
+  const normalisedPreKeys = (Array.isArray(preKeys) ? preKeys : [])
+    .map((k, idx) => ({
+      // id: k.id ?? k.keyId,                // accept either name (OLD)
+      // publicKey: extractPublicKeyB64(k),  // may be undefined if not parseable (OLD)
+      id: k.id ?? k.keyId ?? k.preKeyId ?? idx, // accept preKeyId or fall back to index
+      // Try extractor first, then specific field
+      publicKey:
+        extractPublicKeyB64(k) ||
+        (typeof k.preKeyPublicKey === "string" ? k.preKeyPublicKey : undefined),
+    }))
+    // drop any that we still couldn't parse or have invalid id
+    .filter((k) => typeof k.id === "number" && k.publicKey);
+
   if (
     !userId ||
     !registrationId ||
@@ -38,17 +105,20 @@ export default cors(async function handler(req, res) {
     !signedPreKeyId ||
     !signedPreKeyPublicKey ||
     !signedPreKeySignature ||
-    !Array.isArray(preKeys) ||
-    preKeys.length === 0 ||
-    !preKeys.every(isValidPreKey)
+    normalisedPreKeys.length === 0 // Check if any usable preKeys are left after normalization
   ) {
-    console.error("Missing or invalid fields in registration request:", {
-      body: req.body,
-      preKeysValid: Array.isArray(preKeys) && preKeys.every(isValidPreKey),
+    console.error(
+      "Missing or invalid fields in registration request (after robust normalization):",
+      {
+        body: req.body, // Log original body for context
+        parsedPreKeysCount: normalisedPreKeys.length,
+        // Log how many keys were in the original array for comparison if needed:
+        originalPreKeysCount: Array.isArray(preKeys) ? preKeys.length : 0,
+      }
+    );
+    return res.status(400).json({
+      error: "Bad registration payload or no valid pre-keys provided.",
     });
-    return res
-      .status(400)
-      .json({ error: "Missing or invalid fields for registration." });
   }
   // --- Input Validation --- END ---
 
@@ -119,7 +189,7 @@ export default cors(async function handler(req, res) {
     }
     // --- Determine deviceId (Reuse or Create) --- END ---
 
-    // --- Upsert Bundle (Without PreKey) --- START ---
+    // --- Upsert Bundle (WITH Selected PreKey) --- START ---
     if (
       typeof theDeviceId !== "number" ||
       isNaN(theDeviceId) ||
@@ -130,61 +200,51 @@ export default cors(async function handler(req, res) {
       );
       throw new Error(`Invalid final theDeviceId: ${theDeviceId}`);
     }
+
+    // Select the first preKey from the batch to include in the main bundle
+    const selectedPreKey = normalisedPreKeys[0];
+
+    // Sanity check log as requested
+    console.log("[Register API] first pre-key normalised:", selectedPreKey);
+
+    const bundleToUpsert = {
+      device_id: theDeviceId,
+      registration_id: registrationId,
+      identity_key_b64: identityKey,
+      signed_pre_key_id: signedPreKeyId,
+      signed_pre_key_public_b64: signedPreKeyPublicKey,
+      signed_pre_key_sig_b64: signedPreKeySignature,
+      pre_key_id: selectedPreKey.id, // Added from selected one-time pre-key
+      pre_key_public_b64: selectedPreKey.publicKey, // Added from selected one-time pre-key
+    };
+
     console.log(
-      `[Register API] Upserting bundle (NO pre-key) for final theDeviceId: ${theDeviceId}`
+      `[Register API] Upserting complete bundle for deviceId: ${theDeviceId}`,
+      // Avoid logging sensitive key material directly in production if bundleToUpsert contains it
+      // For debugging, you might log Object.keys(bundleToUpsert) or a sanitized version
+      {
+        device_id: bundleToUpsert.device_id,
+        registration_id: bundleToUpsert.registration_id,
+        pre_key_id: bundleToUpsert.pre_key_id,
+      }
     );
 
     const { error: upsertError } = await supabaseAdmin.from("bundles").upsert(
-      {
-        device_id: theDeviceId,
-        registration_id: registrationId,
-        identity_key_b64: identityKey,
-        signed_pre_key_id: signedPreKeyId,
-        signed_pre_key_public_b64: signedPreKeyPublicKey,
-        signed_pre_key_sig_b64: signedPreKeySignature,
-      },
-      { onConflict: "device_id" }
+      bundleToUpsert,
+      { onConflict: "device_id" } // Upsert based on device_id
     );
 
     if (upsertError) {
       console.error(
-        `[Register API] Error upserting bundle for deviceId ${theDeviceId}:`,
+        `[Register API] Error upserting complete bundle for deviceId ${theDeviceId}:`,
         upsertError
       );
-      throw new Error(`Bundle upsert failed: ${upsertError.message}`);
+      throw new Error(`Complete bundle upsert failed: ${upsertError.message}`);
     }
     console.log(
-      `[Register API] Bundle upsert successful for deviceId: ${theDeviceId}`
+      `[Register API] Complete bundle upsert successful for deviceId: ${theDeviceId}`
     );
-    // --- Upsert Bundle (Without PreKey) --- END ---
-
-    // --- Store PreKey Batch --- START ---
-    const preKeysToInsert = preKeys.map((key) => ({
-      device_id: theDeviceId,
-      user_id: userId,
-	  registration_id: registrationId,
-      public_key_b64: key.preKeyPublicKey,
-    }));
-
-    console.log(
-      `[Register API] Inserting ${preKeysToInsert.length} pre-keys into 'prekey_bundles' for deviceId ${theDeviceId}...`
-    );
-
-    const { error: preKeyInsertError } = await supabaseAdmin
-      .from("prekey_bundles")
-      .insert(preKeysToInsert);
-
-    if (preKeyInsertError) {
-      console.error(
-        `[Register API] Error inserting pre-keys for deviceId ${theDeviceId}:`,
-        preKeyInsertError
-      );
-      throw new Error(`Pre-key insertion failed: ${preKeyInsertError.message}`);
-    }
-    console.log(
-      `[Register API] Pre-keys insertion successful for deviceId: ${theDeviceId}`
-    );
-    // --- Store PreKey Batch --- END ---
+    // --- Upsert Bundle (WITH Selected PreKey) --- END ---
 
     // Return the deviceId that was used/created
     return res.status(200).json({ deviceId: theDeviceId });
