@@ -1,25 +1,37 @@
 // import * as signal from "@privacyresearch/libsignal-protocol-typescript"; // REMOVED: No longer needed here
 
-const DB_NAME = "SecureChatDB";
+// --- Fix: Separate DB Name --- START ---
+const DB_NAME = "SignalKeysDB"; // Use a distinct name for the Signal key store
+// --- Fix: Separate DB Name --- END ---
 const DB_VERSION = 1;
 const KEY_STORE_NAME = "signalKeys";
 const SESSION_STORE_NAME = "signalSessions";
 // Add other stores as needed by the SignalProtocolStore interface
 const PREKEY_STORE_NAME = "signalPreKeys";
 const SIGNED_PREKEY_STORE_NAME = "signalSignedPreKeys";
-const IDENTITY_STORE_NAME = "signalIdentity"; // For identity key pair
+const IDENTITY_STORE_NAME = "signalIdentity";
 
-let dbPromise = null;
+// --- Namespace DB Connections --- START ---
+// Use a Map to store DB connection promises, keyed by userId
+const dbPromiseMap = new Map();
 
-function getDb() {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      console.log(`Opening IndexedDB: ${DB_NAME} version ${DB_VERSION}`);
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+function getDb(userId) {
+  if (!userId) {
+    return Promise.reject(new Error("getDb requires a userId"));
+  }
+
+  if (!dbPromiseMap.has(userId)) {
+    const userDbName = `${DB_NAME}_${userId}`; // Use the DB_NAME constant
+    console.log(`[localDb] Creating/Opening DB promise for: ${userDbName}`);
+
+    const promise = new Promise((resolve, reject) => {
+      console.log(`Opening IndexedDB: ${userDbName} version ${DB_VERSION}`);
+      const request = indexedDB.open(userDbName, DB_VERSION);
 
       request.onerror = (event) => {
         console.error("IndexedDB error:", event.target.error);
         reject(`IndexedDB error: ${event.target.error}`);
+        dbPromiseMap.delete(userId); // Remove promise on error
       };
 
       request.onsuccess = (event) => {
@@ -29,7 +41,7 @@ function getDb() {
         // --- Add event listeners to the DB connection itself --- START ---
         db.onclose = () => {
           console.warn("IndexedDB connection closed unexpectedly.");
-          dbPromise = null; // Reset promise so it reopens on next call
+          dbPromiseMap.delete(userId); // Remove promise so it reopens
         };
         db.onerror = (event) => {
           // Log errors that occur on the connection after it's opened
@@ -38,7 +50,7 @@ function getDb() {
             event.target.error
           );
           // Optionally close and reset
-          dbPromise = null;
+          dbPromiseMap.delete(userId);
         };
         db.onversionchange = () => {
           // Handle requests to upgrade the DB from other tabs/windows
@@ -46,53 +58,51 @@ function getDb() {
             "IndexedDB version change requested. Closing old connection..."
           );
           db.close(); // Close the current connection to allow the upgrade
-          dbPromise = null; // Reset promise
+          dbPromiseMap.delete(userId); // Reset promise
         };
         // --- Add event listeners to the DB connection itself --- END ---
 
-        resolve(db); // Resolve the promise with the db instance
-      };
+        // Resolve the promise with the db instance
+        resolve(db);
+      }; // End of request.onsuccess
 
-      // This event only executes if the version number changes
-      // or the database is created for the first time.
+      // Assign onupgradeneeded directly to the request
       request.onupgradeneeded = (event) => {
         console.log("IndexedDB upgrade needed.");
         const db = event.target.result;
         if (!db.objectStoreNames.contains(KEY_STORE_NAME)) {
           console.log(`Creating object store: ${KEY_STORE_NAME}`);
-          // Simple key-value store for general keys/data
           db.createObjectStore(KEY_STORE_NAME);
         }
         if (!db.objectStoreNames.contains(SESSION_STORE_NAME)) {
           console.log(`Creating object store: ${SESSION_STORE_NAME}`);
-          // Store sessions by address (recipientId.deviceId)
           db.createObjectStore(SESSION_STORE_NAME);
         }
         if (!db.objectStoreNames.contains(PREKEY_STORE_NAME)) {
           console.log(`Creating object store: ${PREKEY_STORE_NAME}`);
-          // Store preKeys by keyId
           db.createObjectStore(PREKEY_STORE_NAME);
         }
         if (!db.objectStoreNames.contains(SIGNED_PREKEY_STORE_NAME)) {
           console.log(`Creating object store: ${SIGNED_PREKEY_STORE_NAME}`);
-          // Store signedPreKeys by keyId
           db.createObjectStore(SIGNED_PREKEY_STORE_NAME);
         }
         if (!db.objectStoreNames.contains(IDENTITY_STORE_NAME)) {
           console.log(`Creating object store: ${IDENTITY_STORE_NAME}`);
-          // Store identity key pair (only one entry expected)
           db.createObjectStore(IDENTITY_STORE_NAME);
         }
         console.log("IndexedDB upgrade complete.");
       };
-    });
+    }); // End of new Promise
+    dbPromiseMap.set(userId, promise);
   }
-  return dbPromise;
+  return dbPromiseMap.get(userId);
 }
+// --- Namespace DB Connections --- END ---
 
 // --- Helper function to perform DB operations ---
-async function performDbOperation(storeName, mode, operation) {
-  const db = await getDb();
+async function performDbOperation(userId, storeName, mode, operation) {
+  if (!userId) throw new Error("performDbOperation requires userId");
+  const db = await getDb(userId); // Pass userId here
   return new Promise((resolve, reject) => {
     let requestResult = undefined; // Variable to store result from request.onsuccess
 
@@ -156,7 +166,7 @@ async function performDbOperation(storeName, mode, operation) {
           "Database connection was closed when trying to start transaction. Resetting promise..."
         );
         // Reset dbPromise to force re-initialization on next call
-        dbPromise = null;
+        dbPromiseMap.delete(userId); // Pass userId here
         // Reject with a specific error message
         reject(
           new Error(
@@ -239,328 +249,548 @@ function deserializeBuffers(obj) {
 // --- SignalProtocolStore Implementation (Partial) ---
 
 export class IndexedDBStore {
-  // Remove constructor dependency injection
-  constructor() {
-    console.log("IndexedDBStore initialized (standard).");
-    getDb();
+  /**
+   * @param {string} userId The user ID for namespacing the database.
+   */
+  constructor(userId) {
+    if (!userId) {
+      throw new Error("IndexedDBStore requires a userId for namespacing.");
+    }
+    this.userId = userId;
+    console.log(`[IndexedDBStore] Initialized for user: ${this.userId}`);
+    // getDb(this.userId); // Don't necessarily need to trigger connection here
   }
 
-  // --- Getters ---
+  /**
+   * Get the stored identity key pair.
+   * @returns {Promise<import('@privacyresearch/libsignal-protocol-typescript').KeyPairType | undefined>}
+   */
   async getIdentityKeyPair() {
-    console.log("IndexedDBStore: getIdentityKeyPair");
-    const kp = await performDbOperation(
+    console.debug("[IndexedDBStore] getIdentityKeyPair called");
+    const serialized = await performDbOperation(
+      this.userId,
       IDENTITY_STORE_NAME,
       "readonly",
-      (store) => store.get("identityKey")
+      (store) => store.get("identityKey") // Correct key name used before
     );
-    // Use standard deserializer
-    return kp ? deserializeBuffers(kp) : undefined;
+    const result = deserializeBuffers(serialized);
+    console.debug(
+      "[IndexedDBStore] getIdentityKeyPair result:",
+      result ? `Found for ${this.userId}` : `Not Found for ${this.userId}`
+    );
+    return result;
   }
-  // ... other getters using deserializeBuffers will now use standard Base64 ...
+
+  /**
+   * Get the local registration ID.
+   * @returns {Promise<number | undefined>}
+   */
   async getLocalRegistrationId() {
-    console.log("IndexedDBStore: getLocalRegistrationId");
-    return performDbOperation(KEY_STORE_NAME, "readonly", (store) =>
-      store.get("registrationId")
+    console.debug("[IndexedDBStore] getLocalRegistrationId called");
+    const regId = await performDbOperation(
+      this.userId,
+      KEY_STORE_NAME, // Stored in KEY_STORE before
+      "readonly",
+      (store) => store.get("registrationId")
     );
+    console.debug(
+      "[IndexedDBStore] getLocalRegistrationId result:",
+      regId !== undefined
+        ? `${regId} for ${this.userId}`
+        : `Not Found for ${this.userId}`
+    );
+    return regId;
   }
+
   async isTrustedIdentity(identifier, identityKey /*, direction */) {
-    console.log(`IndexedDBStore: isTrustedIdentity for ${identifier}`);
+    console.debug(`[IndexedDBStore] isTrustedIdentity for ${identifier}`);
     const trusted = await this.loadIdentityKey(identifier);
     if (!trusted) {
+      // If not trusted, save the new identity key.
+      console.debug(
+        `[IndexedDBStore] No trusted identity found for ${identifier}, saving new one.`
+      );
       await this.saveIdentity(identifier, identityKey);
-      return true;
+      return true; // Trust the newly saved identity
     }
-    // Comparison still needs ArrayBuffers, rely on deserializeBuffers
-    // Convert identityKey to ArrayBuffer if it isn't already?
-    // Let's assume loadIdentityKey returns ArrayBuffer correctly via deserializeBuffers
-    // We need a way to compare ArrayBuffers. Standard === won't work.
-    // For now, let's serialize back to Base64 for comparison (less efficient but simple)
+    // Compare existing trusted key with the provided one.
     const trustedB64 = arrayBufferToBase64(trusted);
     const identityKeyB64 = arrayBufferToBase64(identityKey);
-    return trustedB64 === identityKeyB64;
-  }
-  async loadPreKey(keyId) {
-    console.log(
-      `[DB Store] loadPreKey called for key ID: ${keyId} (Type: ${typeof keyId})`
-    ); // Log key + type
-    const requestedKeyId = Number(keyId); // Ensure we query with number
-    console.log(
-      `[DB Store] loadPreKey requesting numeric key: ${requestedKeyId}`
+    const match = trustedB64 === identityKeyB64;
+    console.debug(
+      `[IndexedDBStore] Trusted identity comparison for ${identifier}: ${match}`
     );
-    const keyPair = await performDbOperation(
+    return match;
+  }
+
+  /**
+   * Load a pre-key record.
+   * @param {number} keyId
+   * @returns {Promise<import('@privacyresearch/libsignal-protocol-typescript').KeyPairType | undefined>}
+   */
+  async loadPreKey(keyId) {
+    console.debug(`[IndexedDBStore] loadPreKey called for keyId: ${keyId}`);
+    const serialized = await performDbOperation(
+      this.userId,
       PREKEY_STORE_NAME,
       "readonly",
-      (store) => store.get(requestedKeyId) // Use numeric key
+      (store) => store.get(Number(keyId)) // Used Number(keyId) before
     );
-    console.log(
-      `[DB Store] loadPreKey Raw result for ${requestedKeyId}:`,
-      keyPair
-    ); // Log raw result
-    if (!keyPair) {
+    const result = deserializeBuffers(serialized);
+    console.debug(
+      `[IndexedDBStore] loadPreKey result for ${keyId}:`,
+      result ? `Found for ${this.userId}` : `Not Found for ${this.userId}`
+    );
+    // Ensure the return type matches KeyPairType (pubKey: ArrayBuffer, privKey: ArrayBuffer)
+    if (
+      result &&
+      result.pubKey instanceof ArrayBuffer &&
+      result.privKey instanceof ArrayBuffer
+    ) {
+      return result;
+    } else if (serialized) {
       console.warn(
-        `[DB Store] loadPreKey: Key ID ${requestedKeyId} not found.`
+        `[IndexedDBStore] Deserialized PreKey ${keyId} is not the expected KeyPairType:`,
+        result
       );
-    } else {
-      console.log(`[DB Store] loadPreKey: Found key for ID ${requestedKeyId}.`);
+      return undefined;
     }
-    return keyPair ? deserializeBuffers(keyPair) : undefined;
+    return undefined;
   }
+
+  /**
+   * Load a session record for the given identifier.
+   * @param {string} identifier - The identifier of the session partner (e.g., recipientId.deviceId).
+   * @returns {Promise<ArrayBuffer | undefined>} The session record ArrayBuffer, or undefined if not found.
+   */
   async loadSession(identifier) {
-    console.log(`IndexedDBStore: loadSession for ${identifier}`);
-    if (!identifier) {
-      throw new Error("Cannot load session with invalid identifier");
+    console.debug(`[IndexedDBStore] loadSession called for: ${identifier}`);
+    let serialized;
+    try {
+      serialized = await performDbOperation(
+        this.userId,
+        SESSION_STORE_NAME,
+        "readonly",
+        (store) => store.get(identifier)
+      );
+    } catch (dbError) {
+      console.error(
+        `[IndexedDBStore] Error fetching session record for ${identifier} from DB:`,
+        dbError
+      );
+      return undefined; // Return undefined on DB fetch error
     }
-    const session = await performDbOperation(
-      SESSION_STORE_NAME,
-      "readonly",
-      (store) => store.get(identifier)
+
+    if (serialized === undefined || serialized === null) {
+      console.debug(
+        `[IndexedDBStore] No session record found in DB for ${identifier}.`
+      );
+      return undefined; // Return undefined if nothing was found
+    }
+
+    // --- Add Try-Catch for Deserialization & Poison Pill Removal --- START ---
+    let sessionRecord;
+    try {
+      sessionRecord = deserializeBuffers(serialized);
+    } catch (deserializationError) {
+      console.error(
+        `[IndexedDBStore] Corrupt session record found for ${identifier}. Failed to deserialize:`,
+        deserializationError,
+        "Raw data:",
+        serialized
+      );
+      // Attempt to remove the corrupted record (poison pill removal)
+      try {
+        await this.removeSession(identifier); // Use the class's removeSession method
+        console.warn(
+          `[IndexedDBStore] Removed corrupted session record for ${identifier}.`
+        );
+      } catch (removeError) {
+        console.error(
+          `[IndexedDBStore] Failed to remove corrupted session record for ${identifier}:`,
+          removeError
+        );
+        // Still return undefined even if removal failed
+      }
+      return undefined; // Return undefined if deserialization fails
+    }
+    // --- Add Try-Catch for Deserialization & Poison Pill Removal --- END ---
+
+    console.debug(
+      `[IndexedDBStore] loadSession result for ${identifier}:`,
+      sessionRecord // Log the actual record or its type
+        ? `Found (type: ${typeof sessionRecord}, isArrayBuffer: ${
+            sessionRecord instanceof ArrayBuffer
+          }) for ${this.userId}`
+        : `Not Found or Invalid for ${this.userId}`
     );
-    console.log(
-      `[DB Store] loadSession(${identifier}) result: ${
-        session ? "Found" : "Not Found"
-      }`,
-      session // Log the raw session object
-    );
-    return session ? deserializeBuffers(session) : undefined; // Re-enable deserialization
+    // --- Fix: Return the sessionRecord directly if it's not undefined --- START ---
+    // The library now stores session records as objects, not necessarily direct ArrayBuffers.
+    // deserializeBuffers should handle the internal structure.
+    return sessionRecord; // Return the deserialized record as is (could be object or ArrayBuffer if it was stored as such directly)
+    // --- Fix: Return the sessionRecord directly if it's not undefined --- END ---
   }
+
+  /**
+   * Load a signed pre-key record.
+   * @param {number} keyId - The key ID of the signed pre-key.
+   * @returns {Promise<import('@privacyresearch/libsignal-protocol-typescript').KeyPairType | undefined>}
+   */
   async loadSignedPreKey(keyId) {
-    console.log(
-      `[DB Store] loadSignedPreKey called for key ID: ${keyId} (Type: ${typeof keyId})`
-    ); // Log key + type
-    const requestedKeyId = Number(keyId); // Ensure we query with number
-    console.log(
-      `[DB Store] loadSignedPreKey requesting numeric key: ${requestedKeyId}`
+    console.debug(
+      `[IndexedDBStore] loadSignedPreKey called for keyId: ${keyId}`
     );
-    const keyPair = await performDbOperation(
+    const serialized = await performDbOperation(
+      this.userId,
       SIGNED_PREKEY_STORE_NAME,
       "readonly",
-      (store) => store.get(requestedKeyId) // Retrieve using Number(keyId)
+      (store) => store.get(Number(keyId)) // Used Number(keyId) before
     );
-    console.log(
-      `[DB Store] loadSignedPreKey Raw result for ${requestedKeyId}:`,
-      keyPair
-    ); // Log raw result
-    if (!keyPair) {
+    const result = deserializeBuffers(serialized);
+    console.debug(
+      `[IndexedDBStore] loadSignedPreKey result for ${keyId}:`,
+      result ? `Found for ${this.userId}` : `Not Found for ${this.userId}`
+    );
+    // Ensure the return type matches KeyPairType
+    if (
+      result &&
+      result.pubKey instanceof ArrayBuffer &&
+      result.privKey instanceof ArrayBuffer
+    ) {
+      return result;
+    } else if (serialized) {
       console.warn(
-        `[DB Store] loadSignedPreKey: Key ID ${requestedKeyId} not found.`
+        `[IndexedDBStore] Deserialized SignedPreKey ${keyId} is not the expected KeyPairType:`,
+        result
       );
-    } else {
-      console.log(
-        `[DB Store] loadSignedPreKey: Found key for ID ${requestedKeyId}.`
-      );
+      return undefined;
     }
-    return keyPair ? deserializeBuffers(keyPair) : undefined;
+    return undefined;
   }
+
+  /**
+   * Load the public identity key for the given identifier.
+   * @param {string} identifier - The identifier of the remote user (e.g., recipientId.deviceId).
+   * @returns {Promise<ArrayBuffer | undefined>} The public identity key ArrayBuffer, or undefined if not found.
+   */
   async loadIdentityKey(identifier) {
-    console.log(`IndexedDBStore: loadIdentityKey for ${identifier}`);
-    const key = await performDbOperation(
+    console.debug(`[IndexedDBStore] loadIdentityKey called for: ${identifier}`);
+    const serialized = await performDbOperation(
+      this.userId,
       IDENTITY_STORE_NAME,
       "readonly",
       (store) => store.get(`identity_${identifier}`)
     );
-    return key ? deserializeBuffers(key) : undefined;
-  }
-
-  // --- Setters ---
-  async storeIdentityKeyPair(identityKeyPair) {
-    console.log("IndexedDBStore: storeIdentityKeyPair");
-    // Use standard serializer
-    const serializableKP = serializeBuffers(identityKeyPair);
-    return performDbOperation(IDENTITY_STORE_NAME, "readwrite", (store) =>
-      store.put(serializableKP, "identityKey")
+    const identityKey = deserializeBuffers(serialized);
+    console.debug(
+      `[IndexedDBStore] loadIdentityKey result for ${identifier}:`,
+      identityKey instanceof ArrayBuffer
+        ? `Found for ${this.userId}`
+        : `Not Found for ${this.userId}`
     );
-  }
-  // ... other setters using serializeBuffers will now use standard Base64 ...
-  async storeLocalRegistrationId(registrationId) {
-    console.log("IndexedDBStore: storeLocalRegistrationId");
-    return performDbOperation(KEY_STORE_NAME, "readwrite", (store) =>
-      store.put(registrationId, "registrationId")
-    );
-  }
-  async storePreKey(keyId, preKey) {
-    console.log(`IndexedDBStore: storePreKey for ${keyId}`);
-    return performDbOperation(PREKEY_STORE_NAME, "readwrite", (store) =>
-      store.put(serializeBuffers(preKey), Number(keyId))
-    );
-  }
-  async storeSession(identifier, session) {
-    console.log(`IndexedDBStore: storeSession for ${identifier}`);
-    if (!identifier) {
-      throw new Error("Cannot store session with invalid identifier");
-    }
-    console.log(
-      `[DB Store] storeSession(${identifier}) data:`,
-      serializeBuffers(session)
-    );
-    return performDbOperation(SESSION_STORE_NAME, "readwrite", (store) =>
-      store.put(serializeBuffers(session), identifier)
-    );
-  }
-  async storeSignedPreKey(keyId, signedPreKey) {
-    console.log(`IndexedDBStore: storeSignedPreKey for ${keyId}`);
-    const serializableKey = serializeBuffers(signedPreKey);
-    return performDbOperation(SIGNED_PREKEY_STORE_NAME, "readwrite", (store) =>
-      store.put(serializableKey, Number(keyId))
-    );
-  }
-  async saveIdentity(identifier, identityKey) {
-    console.log(`IndexedDBStore: saveIdentity for ${identifier}`);
-    const serializableKey = serializeBuffers(identityKey);
-    return performDbOperation(IDENTITY_STORE_NAME, "readwrite", (store) =>
-      store.put(serializableKey, `identity_${identifier}`)
-    );
-  }
-
-  // --- Removers ---
-  async removePreKey(keyId) {
-    console.warn(
-      `[DB Store] NO-OP: removePreKey called for ${keyId}, but deletion is disabled.`
-    );
-    if (keyId === undefined || keyId === null) {
-      throw new Error("Cannot remove PreKey with invalid keyId");
-    }
-    // Do nothing - keep the key
-    return Promise.resolve(); // Return resolved promise to satisfy libsignal
-    /* Original implementation:
-    return performDbOperation(PREKEY_STORE_NAME, "readwrite", (store) =>
-      store.delete(Number(keyId))
-    );
-    */
-  }
-
-  async removeSession(identifier) {
-    console.warn(`IndexedDBStore: removeSession for ${identifier}`);
-    if (!identifier) {
-      throw new Error("Cannot remove session with invalid identifier");
-    }
-    return performDbOperation(SESSION_STORE_NAME, "readwrite", (store) =>
-      store.delete(identifier)
-    );
-  }
-
-  async removeSignedPreKey(keyId) {
-    console.warn(`IndexedDBStore: removeSignedPreKey for ${keyId}`);
-    if (keyId === undefined || keyId === null) {
-      throw new Error("Cannot remove SignedPreKey with invalid keyId");
-    }
-    return performDbOperation(SIGNED_PREKEY_STORE_NAME, "readwrite", (store) =>
-      store.delete(keyId)
-    );
-  }
-
-  async removeAllSessions(identifier) {
-    console.warn(`IndexedDBStore: removeAllSessions for ${identifier}`);
-    // This is more complex - it implies removing all sessions associated
-    // with a recipient identifier (e.g., "recipientId" part without deviceId).
-    // For simplicity with deviceId=1, this might be the same as removeSession.
-    // If multiple devices were supported, you'd need to iterate and delete.
-    if (!identifier) {
-      throw new Error("Cannot remove sessions with invalid identifier base");
-    }
-    // Assuming identifier might be just the recipientId for this method
-    // We need to delete "recipientId.1", "recipientId.2" etc.
-    // For now, just implement for the default deviceId 1
-    const fullIdentifier = `${identifier}.1`;
-    return this.removeSession(fullIdentifier);
+    return identityKey instanceof ArrayBuffer ? identityKey : undefined;
   }
 
   /**
-   * Delete the cached identity-public-key for a peer.
-   * @param {string} identifier – full "recipientId.deviceId" string,
-   *                              e.g. "2a2d1c4c-7336-41e9-a6d5-cfb980162071.1"
+   * Store the identity key pair for the local user.
+   * @param {import('@privacyresearch/libsignal-protocol-typescript').KeyPairType} identityKeyPair
+   * @returns {Promise<void>}
    */
-  async removeIdentity(identifier) {
-    console.warn(`IndexedDBStore: removeIdentity for ${identifier}`);
-    if (!identifier) {
-      throw new Error("Cannot remove identity with invalid identifier");
-    }
-    // Note: The key in the store is prefixed with 'identity_'
-    return performDbOperation(IDENTITY_STORE_NAME, "readwrite", (store) =>
-      store.delete(`identity_${identifier}`)
+  async storeIdentityKeyPair(identityKeyPair) {
+    console.debug("[IndexedDBStore] storeIdentityKeyPair called");
+    const serialized = serializeBuffers(identityKeyPair);
+    await performDbOperation(
+      this.userId,
+      IDENTITY_STORE_NAME,
+      "readwrite",
+      (store) => store.put(serialized, "identityKey") // Correct key name used before
+    );
+    console.debug(
+      `[IndexedDBStore] Stored identity key pair for ${this.userId}.`
     );
   }
 
-  // --- Misc ---
+  /**
+   * Store the local registration ID.
+   * @param {number} registrationId
+   * @returns {Promise<void>}
+   */
+  async storeLocalRegistrationId(registrationId) {
+    console.debug("[IndexedDBStore] storeLocalRegistrationId called");
+    await performDbOperation(
+      this.userId,
+      KEY_STORE_NAME, // Stored in KEY_STORE before
+      "readwrite",
+      (store) => store.put(registrationId, "registrationId")
+    );
+    console.debug(
+      `[IndexedDBStore] Stored local registration ID for ${this.userId}.`
+    );
+  }
 
-  // --- Add missing methods --- START ---
+  /**
+   * Store a pre-key record.
+   * @param {number} keyId
+   * @param {import('@privacyresearch/libsignal-protocol-typescript').KeyPairType} preKey
+   * @returns {Promise<void>}
+   */
+  async storePreKey(keyId, preKey) {
+    console.debug(`[IndexedDBStore] storePreKey called for keyId: ${keyId}`);
+    const serialized = serializeBuffers(preKey);
+    await performDbOperation(
+      this.userId,
+      PREKEY_STORE_NAME,
+      "readwrite",
+      (store) => store.put(serialized, Number(keyId)) // Used Number(keyId) before
+    );
+    console.debug(
+      `[IndexedDBStore] Stored pre-key ${keyId} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Store a session record for the given identifier.
+   * @param {string} identifier - The identifier of the session partner (e.g., recipientId.deviceId).
+   * @param {ArrayBuffer} session - The session record ArrayBuffer.
+   * @returns {Promise<void>}
+   */
+  async storeSession(identifier, session) {
+    console.debug(`[IndexedDBStore] storeSession called for: ${identifier}`);
+    const serialized = serializeBuffers(session); // Session is ArrayBuffer
+    await performDbOperation(
+      this.userId,
+      SESSION_STORE_NAME,
+      "readwrite",
+      (store) => store.put(serialized, identifier)
+    );
+    console.debug(
+      `[IndexedDBStore] Stored session for ${identifier} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Store a signed pre-key record.
+   * @param {number} keyId
+   * @param {import('@privacyresearch/libsignal-protocol-typescript').KeyPairType} signedPreKey
+   * @returns {Promise<void>}
+   */
+  async storeSignedPreKey(keyId, signedPreKey) {
+    console.debug(
+      `[IndexedDBStore] storeSignedPreKey called for keyId: ${keyId}`
+    );
+    const serialized = serializeBuffers(signedPreKey);
+    await performDbOperation(
+      this.userId,
+      SIGNED_PREKEY_STORE_NAME,
+      "readwrite",
+      (store) => store.put(serialized, Number(keyId)) // Used Number(keyId) before
+    );
+    console.debug(
+      `[IndexedDBStore] Stored signed pre-key ${keyId} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Associate a public identity key with an identifier.
+   * Marks the identity as trusted.
+   * @param {string} identifier - The identifier of the remote user (e.g., recipientId.deviceId).
+   * @param {ArrayBuffer} identityKey - The public identity key ArrayBuffer.
+   * @returns {Promise<void>}
+   */
+  async saveIdentity(identifier, identityKey) {
+    console.debug(`[IndexedDBStore] saveIdentity called for: ${identifier}`);
+    const serialized = serializeBuffers(identityKey);
+    await performDbOperation(
+      this.userId,
+      IDENTITY_STORE_NAME,
+      "readwrite",
+      (store) => store.put(serialized, `identity_${identifier}`)
+    );
+    console.debug(
+      `[IndexedDBStore] Saved identity for ${identifier} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Remove a pre-key record.
+   * @param {number} keyId
+   * @returns {Promise<void>}
+   */
+  async removePreKey(keyId) {
+    console.debug(`[IndexedDBStore] removePreKey called for keyId: ${keyId}`);
+    await performDbOperation(
+      this.userId,
+      PREKEY_STORE_NAME,
+      "readwrite",
+      (store) => store.delete(Number(keyId)) // Used Number(keyId) before
+    );
+    console.debug(
+      `[IndexedDBStore] Removed pre-key ${keyId} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Remove a session record.
+   * @param {string} identifier - The identifier of the session partner (e.g., recipientId.deviceId).
+   * @returns {Promise<void>}
+   */
+  async removeSession(identifier) {
+    console.debug(`[IndexedDBStore] removeSession called for: ${identifier}`);
+    await performDbOperation(
+      this.userId,
+      SESSION_STORE_NAME,
+      "readwrite",
+      (store) => store.delete(identifier)
+    );
+    console.debug(
+      `[IndexedDBStore] Removed session for ${identifier} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Remove a signed pre-key record.
+   * @param {number} keyId
+   * @returns {Promise<void>}
+   */
+  async removeSignedPreKey(keyId) {
+    console.debug(
+      `[IndexedDBStore] removeSignedPreKey called for keyId: ${keyId}`
+    );
+    await performDbOperation(
+      this.userId,
+      SIGNED_PREKEY_STORE_NAME,
+      "readwrite",
+      (store) => store.delete(Number(keyId)) // Used Number(keyId) before
+    );
+    console.debug(
+      `[IndexedDBStore] Removed signed pre-key ${keyId} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Remove all session records for a given base identifier (user ID).
+   * This is NOT part of the standard SignalProtocolStore interface but can be useful.
+   * @param {string} identifierBase - The base identifier (e.g., user ID).
+   * @returns {Promise<void>}
+   */
+  async removeAllSessions(identifierBase) {
+    console.warn(
+      `[IndexedDBStore] removeAllSessions called for base: ${identifierBase} for user ${this.userId}. This is a non-standard operation.`
+    );
+    await performDbOperation(
+      this.userId,
+      SESSION_STORE_NAME,
+      "readwrite",
+      (store) => {
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            // Check if the key (identifier) starts with the base identifier
+            if (String(cursor.key).startsWith(identifierBase + ".")) {
+              console.debug(
+                `[IndexedDBStore] Removing session via removeAllSessions: ${cursor.key} for user ${this.userId}`
+              );
+              cursor.delete();
+            }
+            cursor.continue();
+          }
+        };
+        // Return the request object for the helper to handle completion/error
+        return cursorReq;
+      }
+    );
+    console.warn(
+      `[IndexedDBStore] Finished removeAllSessions for ${identifierBase} for user ${this.userId}.`
+    );
+  }
+
+  /**
+   * Remove the identity key associated with an identifier.
+   * @param {string} identifier - The identifier of the remote user (e.g., recipientId.deviceId).
+   * @returns {Promise<void>}
+   */
+  async removeIdentity(identifier) {
+    console.debug(`[IndexedDBStore] removeIdentity called for: ${identifier}`);
+    // Remove the trusted identity marker
+    await performDbOperation(
+      this.userId,
+      IDENTITY_STORE_NAME,
+      "readwrite",
+      (store) => store.delete(`identity_${identifier}`)
+    );
+    // Note: This does NOT remove the local user's identity key pair stored under "identityKey".
+    console.debug(
+      `[IndexedDBStore] Removed identity trust for ${identifier} for ${this.userId}.`
+    );
+  }
+
+  /**
+   * Check if a session record exists for the given identifier.
+   * @param {string} identifier - The identifier of the session partner (e.g., recipientId.deviceId).
+   * @returns {Promise<boolean>}
+   */
   async containsSession(identifier) {
-    console.log(`IndexedDBStore: containsSession for ${identifier}`);
-    if (!identifier) {
-      console.warn("[DB Store] containsSession called with invalid identifier");
-      return false; // Or throw? Let's return false for boolean check.
-    }
-    // Check if a session exists by attempting to get it (returns undefined if not found)
-    const session = await performDbOperation(
+    console.debug(`[IndexedDBStore] containsSession called for: ${identifier}`);
+    const count = await performDbOperation(
+      this.userId,
       SESSION_STORE_NAME,
       "readonly",
-      (store) => store.get(identifier) // Use get instead of loadSession to avoid deserialization cost
+      (store) => store.count(identifier)
     );
-    const exists = session !== undefined; // Check if *any* value was retrieved
-    console.log(`[DB Store] containsSession(${identifier}) result: ${exists}`);
+    const exists = count > 0;
+    console.debug(
+      `[IndexedDBStore] containsSession result for ${identifier}: ${exists} for user ${this.userId}`
+    );
     return exists;
   }
 
   // libsignal older builds might call sessionExists, alias for compatibility
-  // Although current error is for containsSession, this is safe to include
   sessionExists(identifier) {
     return this.containsSession(identifier);
   }
 
   // libsignal expects deleteSession
   async deleteSession(identifier) {
-    console.log(`IndexedDBStore: deleteSession for ${identifier}`);
-    // Delegate to the existing removeSession logic
+    console.warn("deleteSession is deprecated/non-standard? Use removeSession");
     return this.removeSession(identifier);
   }
 
   // libsignal expects deleteAllSessions
   async deleteAllSessions(identifierBase) {
-    console.log(`IndexedDBStore: deleteAllSessions for ${identifierBase}`);
-    // Delegate to the existing removeAllSessions logic
-    // Note: The current removeAllSessions only handles deviceId 1.
-    // Needs refinement if multiple devices are supported.
+    console.warn(
+      "deleteAllSessions is non-standard. Using custom implementation."
+    );
     return this.removeAllSessions(identifierBase);
   }
-  // --- Add missing methods --- END ---
 
   /**
-   * Clears the entire IndexedDB database used by the store.
-   * USE WITH CAUTION - This deletes all keys and sessions.
+   * Clears all data from all signal-related object stores for the specific user instance.
+   * USE WITH CAUTION.
+   * @returns {Promise<void[]>}
    */
   async clearAllData() {
-    console.warn("Clearing all data from SecureChatDB...");
-    // Close the connection if open
-    if (dbPromise) {
-      const db = await dbPromise;
-      db.close();
-      dbPromise = null; // Reset the promise
-    }
-    return new Promise((resolve, reject) => {
-      const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
-      deleteRequest.onsuccess = () => {
-        console.log("SecureChatDB deleted successfully.");
-        resolve();
-      };
-      deleteRequest.onerror = (event) => {
-        console.error("Error deleting database:", event.target.error);
-        reject("Error deleting database");
-      };
-      deleteRequest.onblocked = () => {
-        console.warn(
-          "Database deletion blocked. Ensure all connections are closed."
-        );
-        reject("Database deletion blocked");
-      };
+    console.warn(
+      `[IndexedDBStore] CLEARING ALL DATA for user ${this.userId}...`
+    );
+    const storesToClear = [
+      KEY_STORE_NAME,
+      SESSION_STORE_NAME,
+      PREKEY_STORE_NAME,
+      SIGNED_PREKEY_STORE_NAME,
+      IDENTITY_STORE_NAME,
+    ];
+
+    const clearPromises = storesToClear.map((storeName) =>
+      performDbOperation(this.userId, storeName, "readwrite", (store) =>
+        store.clear()
+      )
+    );
+
+    return Promise.all(clearPromises).then(() => {
+      console.warn(
+        `[IndexedDBStore] ALL DATA CLEARED for user ${this.userId}.`
+      );
     });
   }
-
-  // The libsignal library might expect a Direction enum or similar
-  // We can define it here if needed, or adjust isTrustedIdentity if the library passes it
-  // static Direction = { SENDING: 1, RECEIVING: 2 };
 }
-
-// RE-INSTATE instance creation and export from here
-export const signalStore = new IndexedDBStore();
-
-// Optional: Export db functions if needed directly elsewhere
-// export { dbSet, dbGet, dbRemove };
