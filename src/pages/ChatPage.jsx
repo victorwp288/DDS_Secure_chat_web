@@ -408,10 +408,7 @@ export default function ChatPage() {
 
   // derive once – **never** set state while rendering
   const chatInactive =
-    selectedConversation &&
-    !selectedConversation.is_group &&
-    (selectedConversation.my_status !== "accepted" ||
-      selectedConversation.peer_status !== "accepted");
+    selectedConversation && selectedConversation.my_status !== "accepted";
 
   // 1. Get current user and profile
   useEffect(() => {
@@ -588,10 +585,7 @@ export default function ChatPage() {
     if (
       !selectedConversation?.id ||
       !currentUser?.id ||
-      (!selectedConversation.is_group &&
-        selectedConversation.my_status === "pending") || // Don't fetch for pending 1-on-1
-      (!selectedConversation.is_group &&
-        selectedConversation.my_status === "rejected") // Don't fetch for rejected 1-on-1
+      selectedConversation.my_status !== "accepted"
     ) {
       setMessages([]); // Keep clearing if conversation/user is invalid or status is pending/rejected for 1-on-1
       setLoadingMessages(false); // Ensure loading is false
@@ -679,195 +673,180 @@ export default function ChatPage() {
           if (cachedContent) {
             processedContent = cachedContent;
           } else {
-            // --- MODIFIED: Handle plain-text sender copies --- START ---
-            if (isSelfSent) {
-              if (msg.type === 1) {
-                // This is the plain-text sender copy
-                processedContent = msg.body;
-              } else {
-                // Unexpected uncached self-sent message (shouldn't happen with current logic)
-                processedContent = "[Self, Uncached Encrypted - Error]";
+            // --- REMOVED: Plaintext sender copy branch (msg.type === 1) ---
+            // Now always treat as encrypted, even for self-sent messages
+            const dbHexString = msg.body;
+            let bodyUint8Array;
+            try {
+              bodyUint8Array = hexToUint8Array(dbHexString);
+            } catch (e) {
+              console.error(
+                `[Effect 3] Hex conversion error for msg ${msg.id}:`,
+                e
+              );
+              processedContent = "[DB Body Corrupt]";
+              decryptedMessages.push({
+                id: msg.id,
+                senderId: senderProfile?.id || msg.profile_id,
+                senderName:
+                  senderProfile?.full_name ||
+                  senderProfile?.username ||
+                  "Unknown User",
+                senderAvatar: senderProfile?.avatar_url,
+                content: processedContent,
+                timestamp,
+                isSelf: false,
+              });
+              continue;
+            }
+            if (bodyUint8Array) {
+              const senderDeviceIdNum = Number(msg.device_id || 1);
+              const addr = new SignalProtocolAddress(
+                msg.profile_id,
+                senderDeviceIdNum
+              );
+              const addrStr = addr.toString();
+              try {
+                // For type 3, let libsignal handle session creation on decrypt
+                const plaintextBuffer = await decryptMessage(
+                  signalStore,
+                  currentUser.id, // myUserId
+                  myCurrentDeviceId, // myDeviceId
+                  msg.profile_id, // theirUserId
+                  senderDeviceIdNum, // theirDeviceId
+                  { type: msg.type, body: bodyUint8Array }
+                );
+                if (plaintextBuffer) {
+                  processedContent = arrayBufferToString(plaintextBuffer);
+                  await cacheSentMessage(currentUser.id, {
+                    id: msg.id,
+                    content: processedContent,
+                    conversationId: selectedConversation.id,
+                    timestamp: msg.created_at,
+                  });
+                } else {
+                  processedContent = "[Decryption Failed - No Buffer]";
+                }
+              } catch (decryptionError) {
+                // Handle duplicate prekey decryption gracefully
+                if (
+                  decryptionError.message?.toLowerCase().includes("duplicate")
+                ) {
+                  console.warn(
+                    `[FetchMessages] Duplicate prekey message for ${addrStr} (msg ID: ${msg.id}), ignoring.`
+                  );
+                  continue;
+                }
+                // --- FIX 3: Improved Bad MAC Handling ---
+                // Check if it's a BadMacError specifically for PreKey messages (type 3)
+                // Note: You might need to adjust how BadMacError is detected depending on libsignal's exact error object structure
+                if (
+                  decryptionError.message?.includes("Bad MAC") &&
+                  msg.type === 3
+                ) {
+                  console.warn(
+                    `[FetchMessages] Bad MAC for PreKeyWhisperMessage ${addrStr} (msg ID: ${msg.id}). Likely wrong key/device or duplicate. Ignoring.`
+                  );
+                  // Instead of full recovery, just mark as failed/skip
+                  processedContent =
+                    "[Decryption Failed - Bad MAC / Wrong Key]";
+                  // Or simply 'continue;' if you don't want to show anything
+                }
+                // --- END FIX 3 ---
+                // Keep recovery for other errors, but maybe only if session exists?
+                // Example: Keep recovery attempt for other potential errors if a session WAS expected
+                // The original "Bad MAC" recovery logic is now conditional
+                else if (decryptionError.message?.includes("Bad MAC")) {
+                  // This block handles Bad MAC for non-PreKey messages (less common, might indicate actual corruption/ratchet issue)
+                  // Or it handles the case where we decided *not* to simply ignore the PreKey Bad MAC above
+                  console.warn(
+                    `[FetchMessages Recover] Bad MAC detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry (Original Logic)...`
+                  );
+                  try {
+                    await signalStore.removeSession(addrStr);
+                    console.log(
+                      `[FetchMessages Recover] Removed session for ${addrStr}.`
+                    );
+                    const peerBundlesData = await get(
+                      `/signal/bundles/${msg.profile_id}`
+                    );
+                    if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
+                      throw new Error(
+                        `[FetchMessages Recover] No valid bundles array found for peer ${msg.profile_id}.`
+                      );
+                    }
+                    const bundleMap = bundlesToMap(peerBundlesData);
+                    const bundleForDevice = bundleMap.get(senderDeviceIdNum);
+                    if (!bundleForDevice) {
+                      throw new Error(
+                        `[FetchMessages Recover] Bundle not found for ${addrStr} (Device ID: ${senderDeviceIdNum}) after fetching.`
+                      );
+                    }
+                    console.log(
+                      `[FetchMessages Recover] Fetched bundle for ${addrStr}.`
+                    );
+                    await safeProcessPreKey(
+                      signalStore,
+                      msg.profile_id,
+                      senderDeviceIdNum,
+                      bundleForDevice
+                    );
+                    console.log(
+                      `[FetchMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
+                    );
+                    const plaintextBufferRetry = await decryptMessage(
+                      signalStore,
+                      currentUser.id, // myUserId
+                      myCurrentDeviceId, // myDeviceId
+                      msg.profile_id, // theirUserId
+                      senderDeviceIdNum, // theirDeviceId
+                      { type: msg.type, body: bodyUint8Array }
+                    );
+                    if (plaintextBufferRetry) {
+                      processedContent =
+                        arrayBufferToString(plaintextBufferRetry);
+                      await cacheSentMessage(currentUser.id, {
+                        id: msg.id,
+                        content: processedContent, // --- FIX 4: Ensure caching after successful retry ---
+                        conversationId: selectedConversation.id,
+                        timestamp: msg.created_at,
+                      });
+                      console.log(
+                        `[FetchMessages Recover] Decryption successful for ${addrStr} after retry.`
+                      );
+                    } else {
+                      processedContent =
+                        "[Decryption Failed After Retry - No Buffer]";
+                      console.warn(
+                        `[FetchMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
+                      );
+                    }
+                  } catch (recoveryError) {
+                    console.error(
+                      `[FetchMessages Recover] Error during recovery for ${addrStr}: ${recoveryError.message}`,
+                      recoveryError
+                    );
+                    processedContent =
+                      "[Decryption Error After Recovery Attempt]";
+                  }
+                } else {
+                  // For errors other than "Bad MAC"
+                  console.error(
+                    `[Effect 3] Decryption error for msg ${msg.id} (not Bad MAC):`,
+                    decryptionError
+                  );
+                  processedContent = "[Decryption Error - Other]";
+                }
               }
             } else {
-              // --- MODIFIED: Handle plain-text sender copies --- END ---
-              // --- FIX: Do NOT preemptively build session for type 3 (PreKeyWhisper) messages ---
-              const dbHexString = msg.body;
-              let bodyUint8Array;
-              try {
-                bodyUint8Array = hexToUint8Array(dbHexString);
-              } catch (e) {
-                console.error(
-                  `[Effect 3] Hex conversion error for msg ${msg.id}:`,
-                  e
-                );
-                processedContent = "[DB Body Corrupt]";
-                decryptedMessages.push({
-                  id: msg.id,
-                  senderId: senderProfile?.id || msg.profile_id,
-                  senderName:
-                    senderProfile?.full_name ||
-                    senderProfile?.username ||
-                    "Unknown User",
-                  senderAvatar: senderProfile?.avatar_url,
-                  content: processedContent,
-                  timestamp,
-                  isSelf: false,
-                });
-                continue;
-              }
-              if (bodyUint8Array) {
-                const senderDeviceIdNum = Number(msg.device_id || 1);
-                const addr = new SignalProtocolAddress(
-                  msg.profile_id,
-                  senderDeviceIdNum
-                );
-                const addrStr = addr.toString();
-                try {
-                  // For type 3, let libsignal handle session creation on decrypt
-                  const plaintextBuffer = await decryptMessage(
-                    signalStore,
-                    currentUser.id, // myUserId
-                    myCurrentDeviceId, // myDeviceId
-                    msg.profile_id, // theirUserId
-                    senderDeviceIdNum, // theirDeviceId
-                    { type: msg.type, body: bodyUint8Array }
-                  );
-                  if (plaintextBuffer) {
-                    processedContent = arrayBufferToString(plaintextBuffer);
-                    // --- Namespacing: Pass userId to cacheSentMessage --- START ---
-                    await cacheSentMessage(currentUser.id, {
-                      id: msg.id,
-                      content: processedContent,
-                      conversationId: selectedConversation.id,
-                      timestamp: msg.created_at,
-                    });
-                    // --- Namespacing: Pass userId to cacheSentMessage --- END ---
-                  } else {
-                    processedContent = "[Decryption Failed - No Buffer]";
-                  }
-                } catch (decryptionError) {
-                  // Handle duplicate prekey decryption gracefully
-                  if (
-                    decryptionError.message?.toLowerCase().includes("duplicate")
-                  ) {
-                    console.warn(
-                      `[FetchMessages] Duplicate prekey message for ${addrStr} (msg ID: ${msg.id}), ignoring.`
-                    );
-                    continue;
-                  }
-                  // --- FIX 3: Improved Bad MAC Handling ---
-                  // Check if it's a BadMacError specifically for PreKey messages (type 3)
-                  // Note: You might need to adjust how BadMacError is detected depending on libsignal's exact error object structure
-                  if (
-                    decryptionError.message?.includes("Bad MAC") &&
-                    msg.type === 3
-                  ) {
-                    console.warn(
-                      `[FetchMessages] Bad MAC for PreKeyWhisperMessage ${addrStr} (msg ID: ${msg.id}). Likely wrong key/device or duplicate. Ignoring.`
-                    );
-                    // Instead of full recovery, just mark as failed/skip
-                    processedContent =
-                      "[Decryption Failed - Bad MAC / Wrong Key]";
-                    // Or simply 'continue;' if you don't want to show anything
-                  }
-                  // --- END FIX 3 ---
-                  // Keep recovery for other errors, but maybe only if session exists?
-                  // Example: Keep recovery attempt for other potential errors if a session WAS expected
-                  // The original "Bad MAC" recovery logic is now conditional
-                  else if (decryptionError.message?.includes("Bad MAC")) {
-                    // This block handles Bad MAC for non-PreKey messages (less common, might indicate actual corruption/ratchet issue)
-                    // Or it handles the case where we decided *not* to simply ignore the PreKey Bad MAC above
-                    console.warn(
-                      `[FetchMessages Recover] Bad MAC detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry (Original Logic)...`
-                    );
-                    try {
-                      await signalStore.removeSession(addrStr);
-                      console.log(
-                        `[FetchMessages Recover] Removed session for ${addrStr}.`
-                      );
-                      const peerBundlesData = await get(
-                        `/signal/bundles/${msg.profile_id}`
-                      );
-                      if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
-                        throw new Error(
-                          `[FetchMessages Recover] No valid bundles array found for peer ${msg.profile_id}.`
-                        );
-                      }
-                      const bundleMap = bundlesToMap(peerBundlesData);
-                      const bundleForDevice = bundleMap.get(senderDeviceIdNum);
-                      if (!bundleForDevice) {
-                        throw new Error(
-                          `[FetchMessages Recover] Bundle not found for ${addrStr} (Device ID: ${senderDeviceIdNum}) after fetching.`
-                        );
-                      }
-                      console.log(
-                        `[FetchMessages Recover] Fetched bundle for ${addrStr}.`
-                      );
-                      await safeProcessPreKey(
-                        signalStore,
-                        msg.profile_id,
-                        senderDeviceIdNum,
-                        bundleForDevice
-                      );
-                      console.log(
-                        `[FetchMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
-                      );
-                      const plaintextBufferRetry = await decryptMessage(
-                        signalStore,
-                        currentUser.id, // myUserId
-                        myCurrentDeviceId, // myDeviceId
-                        msg.profile_id, // theirUserId
-                        senderDeviceIdNum, // theirDeviceId
-                        { type: msg.type, body: bodyUint8Array }
-                      );
-                      if (plaintextBufferRetry) {
-                        processedContent =
-                          arrayBufferToString(plaintextBufferRetry);
-                        // --- Namespacing: Pass userId to cacheSentMessage --- START ---
-                        await cacheSentMessage(currentUser.id, {
-                          id: msg.id,
-                          content: processedContent, // --- FIX 4: Ensure caching after successful retry ---
-                          conversationId: selectedConversation.id,
-                          timestamp: msg.created_at,
-                        });
-                        // --- Namespacing: Pass userId to cacheSentMessage --- END ---
-                        console.log(
-                          `[FetchMessages Recover] Decryption successful for ${addrStr} after retry.`
-                        );
-                      } else {
-                        processedContent =
-                          "[Decryption Failed After Retry - No Buffer]";
-                        console.warn(
-                          `[FetchMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
-                        );
-                      }
-                    } catch (recoveryError) {
-                      console.error(
-                        `[FetchMessages Recover] Error during recovery for ${addrStr}: ${recoveryError.message}`,
-                        recoveryError
-                      );
-                      processedContent =
-                        "[Decryption Error After Recovery Attempt]";
-                    }
-                  } else {
-                    // For errors other than "Bad MAC"
-                    console.error(
-                      `[Effect 3] Decryption error for msg ${msg.id} (not Bad MAC):`,
-                      decryptionError
-                    );
-                    processedContent = "[Decryption Error - Other]";
-                  }
-                }
-              } else {
-                // This case handles when bodyUint8Array is null/undefined
-                console.warn(
-                  `[Effect 3] Skipping msg ${msg.id} due to missing bodyUint8Array.`
-                );
-                // Optionally add a placeholder message or just skip
-                processedContent = "[Message Body Missing/Invalid]";
-                // We need to push something to maintain message order, or `continue;` to skip entirely.
-                // Let's push the error message for now.
-              }
+              // This case handles when bodyUint8Array is null/undefined
+              console.warn(
+                `[Effect 3] Skipping msg ${msg.id} due to missing bodyUint8Array.`
+              );
+              // Optionally add a placeholder message or just skip
+              processedContent = "[Message Body Missing/Invalid]";
+              // We need to push something to maintain message order, or `continue;` to skip entirely.
+              // Let's push the error message for now.
             }
           }
           decryptedMessages.push({
@@ -1703,47 +1682,108 @@ export default function ChatPage() {
       } // End for...of peers
 
       if (successfullySentToAtLeastOneDevice && lastInsertedMessageDataForUI) {
+        // --- Multi-device encrypted self-copy insert ---
+        let selfCopy = null;
+        try {
+          // Fetch all bundles for the sender (current user)
+          const myBundlesData = await get(`/signal/bundles/${profileId}`);
+          if (myBundlesData && Array.isArray(myBundlesData)) {
+            const myBundleMap = bundlesToMap(myBundlesData);
+            for (const [selfDeviceId] of myBundleMap) {
+              // Robust encrypt/retry pattern for self-copies
+              let ctSelf;
+              try {
+                ctSelf = await encryptMessage(
+                  signalStore,
+                  profileId,
+                  selfDeviceId,
+                  plaintextBytes.buffer
+                );
+              } catch (e) {
+                if (String(e).includes("No record for")) {
+                  await signalStore.removeSession(
+                    new SignalProtocolAddress(
+                      profileId,
+                      selfDeviceId
+                    ).toString()
+                  );
+                  try {
+                    await safeProcessPreKey(
+                      signalStore,
+                      profileId,
+                      selfDeviceId,
+                      myBundleMap.get(selfDeviceId)
+                    );
+                    ctSelf = await encryptMessage(
+                      signalStore,
+                      profileId,
+                      selfDeviceId,
+                      plaintextBytes.buffer
+                    );
+                  } catch (retryErr) {
+                    console.error(
+                      `[SendMessage] Self-copy session retry failed for device ${selfDeviceId}:`,
+                      retryErr
+                    );
+                    continue;
+                  }
+                } else {
+                  console.error(
+                    `[SendMessage] encryptMessage failed for self-device ${selfDeviceId}:`,
+                    e
+                  );
+                  continue;
+                }
+              }
+              const selfBody = `\\x${buf2hex(
+                Uint8Array.from(ctSelf.body, (c) => c.charCodeAt(0))
+              )}`;
+              const { data, error } = await supabase
+                .from("messages")
+                .insert({
+                  conversation_id: conversationId,
+                  profile_id: profileId,
+                  device_id: selfDeviceId, // now reflects the device performing the encryption
+                  target_device_id: selfDeviceId, // each of my devices
+                  type: ctSelf.type,
+                  body: selfBody,
+                })
+                .select()
+                .limit(1);
+              if (error) throw error;
+              // Use the self-copy for my current device for UI
+              if (selfDeviceId === myDeviceId && data && data.length > 0) {
+                selfCopy = data[0];
+              }
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[SendMessage] Failed to insert multi-device encrypted self-copy:",
+            err
+          );
+        }
+        // --- End multi-device encrypted self-copy insert ---
+
         const newMessageForUI = {
-          id: lastInsertedMessageDataForUI.id, // Use the ID from the last successful insert
+          id: selfCopy?.id || lastInsertedMessageDataForUI.id, // Prefer self-copy id for my device
           senderId: profileId,
           senderName: profile?.full_name || profile?.username || "Me",
           senderAvatar: profile?.avatar_url,
           content: contentToProcess, // The original plaintext content
           timestamp: new Date(
-            lastInsertedMessageDataForUI.created_at
+            selfCopy?.created_at || lastInsertedMessageDataForUI.created_at
           ).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           isSelf: true,
         };
         setMessages((prevMessages) => [...prevMessages, newMessageForUI]);
-        // --- Namespacing: Pass userId to cacheSentMessage --- START ---
-        await cacheSentMessage(
-          profileId, // Pass current user ID
-          { ...newMessageForUI, conversationId }
-        );
-        // --- Namespacing: Pass userId to cacheSentMessage --- END ---
+        await cacheSentMessage(profileId, {
+          ...newMessageForUI,
+          conversationId,
+        });
         setNewMessage("");
         setSelectedFile(null);
-        setError(null); // Clear any general error if successful
-
-        // --- ➕ ADD SENDER COPY --- START ---
-        try {
-          console.log(
-            `[SendMessage] Inserting sender copy for conv ${conversationId}, user ${profileId}, device ${myDeviceId}`
-          );
-          await supabase.from("messages").insert({
-            conversation_id: conversationId,
-            profile_id: profileId, // Sender's ID
-            device_id: myDeviceId, // Sender's current device ID
-            target_device_id: myDeviceId, // Mark it as "for me"
-            type: 1, // Convention for plain-text
-            body: contentToProcess, // The original plain text message
-          });
-          console.log("[SendMessage] Sender copy inserted successfully.");
-        } catch (err) {
-          // Log error but don't block UI/throw, as the message *was* sent to others
-          console.error("[SendMessage] Failed to insert sender copy:", err);
-        }
-        // --- ➕ ADD SENDER COPY --- END ---
+        setError(null);
       } else {
         // This error will be set if the message wasn't sent to *any* device of *any* peer
         throw new Error("Failed to send message to any recipient device.");
@@ -1970,10 +2010,12 @@ export default function ChatPage() {
       const participantObjects = memberIds.map((id) => ({
         conversation_id: newConversationId,
         profile_id: id,
+        status: "pending", // Invitee is pending
       }));
       participantObjects.push({
         conversation_id: newConversationId,
         profile_id: currentUser.id,
+        status: "accepted", // Creator is accepted
       });
 
       const { error: participantInsertError } = await supabase
@@ -2004,6 +2046,7 @@ export default function ChatPage() {
         is_group: true,
         group_name: groupName,
         group_avatar_url: null, // Default group avatar
+        my_status: "accepted", // Creator is accepted
       };
 
       // 4. Update State
@@ -2197,11 +2240,7 @@ export default function ChatPage() {
               {/* Added min-h-0 here */}
               <div className="p-2">
                 {conversations
-                  .filter((conv) => {
-                    if (conv.is_group) return true; // groups always visible
-                    // Show 1-on-1 chats as long as MY status is not 'rejected'
-                    return conv.my_status !== "rejected";
-                  })
+                  .filter((conv) => conv.my_status !== "rejected")
                   .map((conv) => (
                     <div
                       key={conv.id}
@@ -2263,7 +2302,7 @@ export default function ChatPage() {
                             )}
                           </div>
                           {/* START: Accept/Reject Buttons for pending 1-on-1 chats */}
-                          {!conv.is_group && conv.my_status === "pending" && (
+                          {conv.my_status === "pending" && (
                             <div className="mt-2 flex gap-2">
                               <Button
                                 size="sm"
@@ -2703,40 +2742,36 @@ export default function ChatPage() {
                   No messages yet. Start the conversation!
                 </div>
               )}
-            {!loadingMessages &&
-              chatInactive && // Use chatInactive
-              selectedConversation && // Ensure selectedConversation exists
-              !selectedConversation.is_group && (
-                <>
-                  {selectedConversation.my_status === "accepted" &&
-                    selectedConversation.peer_status === "pending" && (
-                      <div className="text-center text-slate-500 pt-10">
-                        Waiting for the other user to accept your chat request…
-                      </div>
-                    )}
-
-                  {selectedConversation.my_status === "pending" && (
+            {!loadingMessages && chatInactive && selectedConversation && (
+              <>
+                {selectedConversation.my_status === "pending" && (
+                  <div className="text-center text-slate-500 pt-10">
+                    You've been invited to this{" "}
+                    {selectedConversation.is_group ? "group" : "chat"}. Choose{" "}
+                    <b>Accept</b> or <b>Reject</b> in the sidebar.
+                  </div>
+                )}
+                {selectedConversation.my_status === "rejected" && (
+                  <div className="text-center text-slate-500 pt-10">
+                    This chat request was declined.
+                  </div>
+                )}
+                {!selectedConversation.is_group &&
+                  selectedConversation.my_status === "accepted" &&
+                  selectedConversation.peer_status === "pending" && (
                     <div className="text-center text-slate-500 pt-10">
-                      This user invited you to chat. Choose <b>Accept</b> or{" "}
-                      <b>Reject</b>
-                      in the sidebar.
+                      Waiting for the other user to accept your chat request…
                     </div>
                   )}
-
-                  {selectedConversation.my_status === "rejected" && (
+                {!selectedConversation.is_group &&
+                  selectedConversation.my_status === "accepted" &&
+                  selectedConversation.peer_status === "rejected" && (
                     <div className="text-center text-slate-500 pt-10">
-                      This chat request was declined.
+                      This chat request was declined by the other user.
                     </div>
                   )}
-
-                  {selectedConversation.my_status === "accepted" && // I accepted/sent it
-                    selectedConversation.peer_status === "rejected" && ( // But the peer rejected
-                      <div className="text-center text-slate-500 pt-10">
-                        This chat request was declined by the other user.
-                      </div>
-                    )}
-                </>
-              )}
+              </>
+            )}
             <div ref={messagesEndRef} />
           </div>
           {!selectedConversation && !loadingConversations && (
