@@ -13,13 +13,13 @@ describe("AboutPage", () => {
 
     // Check for the main heading
     const headingElement = screen.getByRole("heading", {
-      name: /About the project/i,
+      name: /About SecureChat/i,
     });
     expect(headingElement).toBeInTheDocument();
 
     // Check for some paragraph text
     const paragraphElement = screen.getByText(
-      /The project is based on end to end message encryption/i
+      /A cutting-edge end-to-end encrypted messaging platform/i
     );
     expect(paragraphElement).toBeInTheDocument();
 
@@ -37,8 +37,6 @@ describe("AboutPage", () => {
     );
 
     // Check for some of the team member names
-    // Note: The original AboutPage.jsx has some inconsistencies in how team members are listed (some with titles, some without, some text-gray-800)
-    // These tests will reflect what's currently rendered.
     expect(
       screen.getByText("Abul Kasem Mohammed Omar Sharif")
     ).toBeInTheDocument();
@@ -55,13 +53,15 @@ describe("AboutPage", () => {
         <AboutPage />
       </MemoryRouter>
     );
-    // Original component has "Our Mission" then "Our project", and "Meet the Team" then "The group:"
-    // Testing for the latter ones as they are the visible h2 headings for those sections after changes.
+    // Check for the actual headings that exist in the component
     expect(
-      screen.getByRole("heading", { name: /Our project/i })
+      screen.getByRole("heading", { name: /Our Mission/i })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /The group:/i })
+      screen.getByRole("heading", { name: /Technical Excellence/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Development Team/i })
     ).toBeInTheDocument();
   });
 });

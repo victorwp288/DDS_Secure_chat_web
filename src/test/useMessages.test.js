@@ -17,6 +17,7 @@ const { mockFrom, mockSelect, mockEq, mockOrder, mockSignalUtils, mockDB } =
 
     const mockDB = {
       getCachedMessageContent: vi.fn(),
+      getCachedMessagesForConversation: vi.fn(),
       cacheSentMessage: vi.fn(),
     };
 
@@ -71,6 +72,7 @@ describe("useMessages", () => {
 
     mockOrder.mockResolvedValue({ data: [], error: null });
     mockDB.getCachedMessageContent.mockResolvedValue(null);
+    mockDB.getCachedMessagesForConversation.mockResolvedValue([]);
     mockDB.cacheSentMessage.mockResolvedValue();
   });
 
@@ -212,9 +214,19 @@ describe("useMessages", () => {
       },
     ];
 
+    const mockCachedMessages = [
+      {
+        id: "msg-1",
+        content: "Cached message content",
+        timestamp: "2023-01-01T10:00:00Z",
+      },
+    ];
+
     // Reset mock for this specific test
     mockOrder.mockResolvedValueOnce({ data: mockRawMessages, error: null });
-    mockDB.getCachedMessageContent.mockResolvedValue("Cached message content");
+    mockDB.getCachedMessagesForConversation.mockResolvedValueOnce(
+      mockCachedMessages
+    );
 
     const { result } = renderHook(() =>
       useMessages(
