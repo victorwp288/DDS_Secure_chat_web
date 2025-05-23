@@ -17,29 +17,43 @@ export function SignalProvider({ children }) {
   const [userId, setUserId] = useState(null);
 
   useEffect(() => {
+    let initialSessionChecked = false;
+
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         const newUserId = session?.user?.id ?? null;
-        console.log(
-          `[SignalContext Auth Listener] Auth state changed. New User ID: ${newUserId}`
-        );
-        setUserId(newUserId);
+
+        // Only update if the userId actually changed
+        setUserId((currentUserId) => {
+          if (currentUserId !== newUserId) {
+            console.log(
+              `[SignalContext Auth Listener] Auth state changed. New User ID: ${newUserId}`
+            );
+            return newUserId;
+          }
+          return currentUserId;
+        });
       }
     );
+
     // Run once on mount in case we already have a session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const initialUserId = session?.user?.id ?? null;
-      console.log(
-        `[SignalContext Auth Listener] Initial session check. User ID: ${initialUserId}`
-      );
-      setUserId(initialUserId);
-    });
+    // Only do this if we haven't checked yet
+    if (!initialSessionChecked) {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        const initialUserId = session?.user?.id ?? null;
+        console.log(
+          `[SignalContext Auth Listener] Initial session check. User ID: ${initialUserId}`
+        );
+        setUserId(initialUserId);
+        initialSessionChecked = true;
+      });
+    }
 
     return () => {
       console.log("[SignalContext Auth Listener] Unsubscribing auth listener.");
       listener?.subscription?.unsubscribe();
     };
-  }, []);
+  }, []); // Empty dependency array - only set up once
 
   // ───────── (re)create store whenever userId changes ─────────
   useEffect(() => {

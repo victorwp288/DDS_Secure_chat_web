@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 import {
   decryptMessage,
@@ -17,11 +17,13 @@ export function useRealtimeSubscriptions({
   conversations,
   onNewMessage,
   onConversationUpdate,
+  onSelectedConversationUpdate,
   fetchAndFormatSingleConversation,
 }) {
   const messageSubscriptionRef = useRef(null);
   const currentUserRef = useRef(currentUser);
   const selectedConversationRef = useRef(selectedConversation);
+  const conversationsRef = useRef(conversations);
 
   // Update refs when values change
   useEffect(() => {
@@ -32,165 +34,176 @@ export function useRealtimeSubscriptions({
     selectedConversationRef.current = selectedConversation;
   }, [selectedConversation]);
 
-  // Handle new realtime messages
-  const handleNewMessage = async (payload) => {
-    const currentUserService = currentUserRef.current;
-    const selectedConversationService = selectedConversationRef.current;
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
-    if (!isReady || !signalContext) {
-      console.warn(
-        "[Realtime HNM] Context not ready or sig not available. Skipping message."
-      );
-      return;
-    }
+  // Memoize the handleNewMessage function to prevent subscription recreation
+  const handleNewMessage = useCallback(
+    async (payload) => {
+      const { new: newMessageData } = payload;
+      const currentUserService = currentUserRef.current;
 
-    const {
-      signalStore: currentSignalStore,
-      deviceId: myCurrentDeviceIdFromContext,
-    } = signalContext;
-    const currentUserId = currentUserService?.id;
+      // SUPER EARLY EXIT: Skip immediately if message is from self, before any other processing
+      if (
+        currentUserService?.id &&
+        newMessageData.profile_id === currentUserService.id
+      ) {
+        console.log("[Realtime HNM] Message is from self. Skipping.");
+        return;
+      }
 
-    if (!currentUserId) {
-      console.warn(
-        "[Realtime HNM] currentUser.id is not available. Skipping message."
-      );
-      return;
-    }
+      const selectedConversationService = selectedConversationRef.current;
 
-    const { new: newMessageData } = payload;
+      if (!isReady || !signalContext) {
+        console.warn(
+          "[Realtime HNM] Context not ready or sig not available. Skipping message."
+        );
+        return;
+      }
 
-    if (
-      !selectedConversationService ||
-      newMessageData.conversation_id !== selectedConversationService.id
-    ) {
+      const {
+        signalStore: currentSignalStore,
+        deviceId: myCurrentDeviceIdFromContext,
+      } = signalContext;
+      const currentUserId = currentUserService?.id;
+
+      if (!currentUserId) {
+        console.warn(
+          "[Realtime HNM] currentUser.id is not available. Skipping message."
+        );
+        return;
+      }
+
+      if (
+        !selectedConversationService ||
+        newMessageData.conversation_id !== selectedConversationService.id
+      ) {
+        console.log(
+          "[Realtime HNM] Message for different or no selected conversation. Skipping."
+        );
+        return;
+      }
+
       console.log(
-        "[Realtime HNM] Message for different or no selected conversation. Skipping."
-      );
-      return;
-    }
-
-    if (newMessageData.profile_id === currentUserId) {
-      console.log("[Realtime HNM] Message is from self. Skipping.");
-      return;
-    }
-
-    console.log(
-      `[Realtime HNM] Comparing device IDs: incoming.target_device_id = ${
-        newMessageData.target_device_id
-      } (type: ${typeof newMessageData.target_device_id}), myCurrentDeviceId = ${myCurrentDeviceIdFromContext} (type: ${typeof myCurrentDeviceIdFromContext})`
-    );
-
-    if (
-      newMessageData.target_device_id !== undefined &&
-      newMessageData.target_device_id !== null &&
-      String(newMessageData.target_device_id) !==
-        String(myCurrentDeviceIdFromContext)
-    ) {
-      console.log(
-        `[Realtime HNM] Message not for this deviceId (Target: ${String(
+        `[Realtime HNM] Comparing device IDs: incoming.target_device_id = ${
           newMessageData.target_device_id
-        )}, Mine: ${String(myCurrentDeviceIdFromContext)}). Skipping.`
+        } (type: ${typeof newMessageData.target_device_id}), myCurrentDeviceId = ${myCurrentDeviceIdFromContext} (type: ${typeof myCurrentDeviceIdFromContext})`
       );
-      return;
-    }
 
-    const senderAddress = new SignalProtocolAddress(
-      newMessageData.profile_id,
-      newMessageData.device_id || 1
-    );
-    const senderAddressString = senderAddress.toString();
+      if (
+        newMessageData.target_device_id !== undefined &&
+        newMessageData.target_device_id !== null &&
+        String(newMessageData.target_device_id) !==
+          String(myCurrentDeviceIdFromContext)
+      ) {
+        console.log(
+          `[Realtime HNM] Message not for this deviceId (Target: ${String(
+            newMessageData.target_device_id
+          )}, Mine: ${String(myCurrentDeviceIdFromContext)}). Skipping.`
+        );
+        return;
+      }
 
-    const { data: senderProfile } = await supabase
-      .from("profiles")
-      .select("id, full_name, username, avatar_url")
-      .eq("id", newMessageData.profile_id)
-      .single();
-
-    let bodyUint8Array;
-    try {
-      bodyUint8Array = hexToUint8Array(newMessageData.body);
-    } catch (conversionError) {
-      console.error(
-        `[Realtime HNM] Hex conversion error for msg ${newMessageData.id}:`,
-        conversionError
-      );
-      return;
-    }
-
-    if (!bodyUint8Array) {
-      console.warn("[Realtime HNM] bodyUint8Array is null after conversion.");
-      return;
-    }
-
-    const ciphertextForDecryption = {
-      type: newMessageData.type,
-      body: bodyUint8Array,
-    };
-
-    let plaintextBuffer;
-    try {
-      plaintextBuffer = await decryptMessage(
-        currentSignalStore,
-        currentUserId,
-        myCurrentDeviceIdFromContext,
+      const senderAddress = new SignalProtocolAddress(
         newMessageData.profile_id,
-        newMessageData.device_id || 1,
-        ciphertextForDecryption
+        newMessageData.device_id || 1
       );
-    } catch (e) {
-      if (e.message?.toLowerCase().includes("duplicate")) {
-        console.warn(
-          `[Realtime HNM] Duplicate prekey message for ${senderAddressString} (msg ID: ${newMessageData.id}), ignoring.`
+      const senderAddressString = senderAddress.toString();
+
+      const { data: senderProfile } = await supabase
+        .from("profiles")
+        .select("id, full_name, username, avatar_url")
+        .eq("id", newMessageData.profile_id)
+        .single();
+
+      let bodyUint8Array;
+      try {
+        bodyUint8Array = hexToUint8Array(newMessageData.body);
+      } catch (conversionError) {
+        console.error(
+          `[Realtime HNM] Hex conversion error for msg ${newMessageData.id}:`,
+          conversionError
         );
         return;
       }
 
-      if (e.message?.includes("Bad MAC") && newMessageData.type === 3) {
-        console.warn(
-          `[Realtime HNM] Bad MAC for PreKeyWhisperMessage ${senderAddressString} (msg ID: ${newMessageData.id}). Likely wrong key/device or duplicate. Ignoring.`
-        );
+      if (!bodyUint8Array) {
+        console.warn("[Realtime HNM] bodyUint8Array is null after conversion.");
         return;
       }
 
-      console.error("[Realtime HNM] Decryption error (other):", e);
-      return;
-    }
+      const ciphertextForDecryption = {
+        type: newMessageData.type,
+        body: bodyUint8Array,
+      };
 
-    if (!plaintextBuffer) {
-      console.warn("[Realtime HNM] Decryption returned null.");
-      return;
-    }
+      let plaintextBuffer;
+      try {
+        plaintextBuffer = await decryptMessage(
+          currentSignalStore,
+          currentUserId,
+          myCurrentDeviceIdFromContext,
+          newMessageData.profile_id,
+          newMessageData.device_id || 1,
+          ciphertextForDecryption
+        );
+      } catch (e) {
+        if (e.message?.toLowerCase().includes("duplicate")) {
+          console.warn(
+            `[Realtime HNM] Duplicate prekey message for ${senderAddressString} (msg ID: ${newMessageData.id}), ignoring.`
+          );
+          return;
+        }
 
-    const plaintext = arrayBufferToString(plaintextBuffer);
+        if (e.message?.includes("Bad MAC") && newMessageData.type === 3) {
+          console.warn(
+            `[Realtime HNM] Bad MAC for PreKeyWhisperMessage ${senderAddressString} (msg ID: ${newMessageData.id}). Likely wrong key/device or duplicate. Ignoring.`
+          );
+          return;
+        }
 
-    if (
-      selectedConversationService &&
-      selectedConversationService.id === newMessageData.conversation_id
-    ) {
-      await cacheSentMessage(currentUserId, {
+        console.error("[Realtime HNM] Decryption error (other):", e);
+        return;
+      }
+
+      if (!plaintextBuffer) {
+        console.warn("[Realtime HNM] Decryption returned null.");
+        return;
+      }
+
+      const plaintext = arrayBufferToString(plaintextBuffer);
+
+      if (
+        selectedConversationService &&
+        selectedConversationService.id === newMessageData.conversation_id
+      ) {
+        await cacheSentMessage(currentUserId, {
+          id: newMessageData.id,
+          content: plaintext,
+          conversationId: selectedConversationService.id,
+          timestamp: newMessageData.created_at,
+        });
+      }
+
+      const formatted = {
         id: newMessageData.id,
+        senderId: senderProfile?.id || newMessageData.profile_id,
+        senderName:
+          senderProfile?.full_name || senderProfile?.username || "Unknown",
+        senderAvatar: senderProfile?.avatar_url,
         content: plaintext,
-        conversationId: selectedConversationService.id,
-        timestamp: newMessageData.created_at,
-      });
-    }
+        timestamp: new Date(newMessageData.created_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        isSelf: false,
+      };
 
-    const formatted = {
-      id: newMessageData.id,
-      senderId: senderProfile?.id || newMessageData.profile_id,
-      senderName:
-        senderProfile?.full_name || senderProfile?.username || "Unknown",
-      senderAvatar: senderProfile?.avatar_url,
-      content: plaintext,
-      timestamp: new Date(newMessageData.created_at).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      isSelf: false,
-    };
-
-    onNewMessage(formatted);
-  };
+      onNewMessage(formatted);
+    },
+    [isReady, signalContext, onNewMessage]
+  ); // Stable dependencies only
 
   // Message subscription effect
   useEffect(() => {
@@ -248,7 +261,7 @@ export function useRealtimeSubscriptions({
       );
       chan.unsubscribe();
     };
-  }, [selectedConversation?.id, isReady, signalContext, onNewMessage]);
+  }, [selectedConversation?.id, isReady, signalContext]);
 
   // Conversation list subscription effect
   useEffect(() => {
@@ -269,7 +282,9 @@ export function useRealtimeSubscriptions({
 
       const newConversationId = newParticipantEntry.conversation_id;
 
-      if (conversations.some((conv) => conv.id === newConversationId)) {
+      if (
+        conversationsRef.current.some((conv) => conv.id === newConversationId)
+      ) {
         console.log(
           `[Realtime ConvList] Conversation ${newConversationId} already in list. Skipping.`
         );
@@ -351,6 +366,8 @@ export function useRealtimeSubscriptions({
             console.log(
               `[Realtime ConvList UPDATE] Peer status updated for conv ${row.conversation_id}. New peer status: ${row.status}`
             );
+
+            // Update conversations list
             onConversationUpdate((prevConvs) =>
               prevConvs.map((c) =>
                 c.id === row.conversation_id
@@ -358,6 +375,17 @@ export function useRealtimeSubscriptions({
                   : c
               )
             );
+
+            // Also update selectedConversation if it's the same conversation
+            if (
+              onSelectedConversationUpdate &&
+              currentSelectedConv.id === row.conversation_id
+            ) {
+              onSelectedConversationUpdate((prevSelected) => ({
+                ...prevSelected,
+                peer_status: row.status,
+              }));
+            }
           }
         }
       )
@@ -382,12 +410,7 @@ export function useRealtimeSubscriptions({
         supabase.removeChannel(conversationListChannel);
       }
     };
-  }, [
-    profile?.id,
-    conversations,
-    onConversationUpdate,
-    fetchAndFormatSingleConversation,
-  ]);
+  }, [profile?.id]);
 
   return {
     // Expose any methods that might be needed

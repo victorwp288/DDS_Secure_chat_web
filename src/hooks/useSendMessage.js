@@ -118,7 +118,12 @@ export function useSendMessage(signalContext, currentUser, profile) {
     }
 
     const chatInactive =
-      selectedConversation && selectedConversation.my_status !== "accepted";
+      selectedConversation &&
+      (selectedConversation.my_status !== "accepted" ||
+        (!selectedConversation.is_group &&
+          selectedConversation.peer_status === "rejected") ||
+        (!selectedConversation.is_group &&
+          selectedConversation.peer_status === "pending"));
     if (chatInactive) {
       console.warn(
         "[sendMessage] Attempted to send message in an inactive chat. Aborting."

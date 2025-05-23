@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 async function fetchAndFormatSingleConversation(
@@ -71,6 +71,17 @@ export function useConversations(profileId) {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Memoize the fetchAndFormatSingleConversation function
+  const memoizedFetchAndFormatSingleConversation = useCallback(
+    (conversationId, currentProfileId) =>
+      fetchAndFormatSingleConversation(
+        conversationId,
+        currentProfileId,
+        supabase
+      ),
+    []
+  );
 
   useEffect(() => {
     if (!profileId) {
@@ -220,11 +231,6 @@ export function useConversations(profileId) {
     setError,
     handleAcceptConversation,
     handleRejectConversation,
-    fetchAndFormatSingleConversation: (conversationId, currentProfileId) =>
-      fetchAndFormatSingleConversation(
-        conversationId,
-        currentProfileId,
-        supabase
-      ),
+    fetchAndFormatSingleConversation: memoizedFetchAndFormatSingleConversation,
   };
 }

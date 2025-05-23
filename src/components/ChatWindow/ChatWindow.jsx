@@ -22,8 +22,14 @@ export function ChatWindow({
   isReady,
   sendLoading,
 }) {
+  // Check if chat is inactive due to status issues
   const chatInactive =
-    selectedConversation && selectedConversation.my_status !== "accepted";
+    selectedConversation &&
+    (selectedConversation.my_status !== "accepted" ||
+      (!selectedConversation.is_group &&
+        selectedConversation.peer_status === "rejected") ||
+      (!selectedConversation.is_group &&
+        selectedConversation.peer_status === "pending"));
 
   return (
     <div className="flex-1 flex flex-col h-full">
@@ -54,6 +60,7 @@ export function ChatWindow({
         disabled={!selectedConversation || loadingConversations || chatInactive}
         isReady={isReady}
         loading={sendLoading}
+        selectedConversation={selectedConversation}
       />
     </div>
   );

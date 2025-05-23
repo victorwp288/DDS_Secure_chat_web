@@ -13,6 +13,7 @@ export function MessageInput({
   disabled,
   isReady,
   loading,
+  selectedConversation,
 }) {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const fileInputRef = useRef();
@@ -45,6 +46,43 @@ export function MessageInput({
 
   const isDisabled = disabled || !isReady || loading;
 
+  const getPlaceholderText = () => {
+    if (!isReady) return "Initializing secure session...";
+    if (loading) return "Sending...";
+
+    if (selectedConversation) {
+      const chatInactive =
+        selectedConversation.my_status !== "accepted" ||
+        (!selectedConversation.is_group &&
+          selectedConversation.peer_status === "rejected") ||
+        (!selectedConversation.is_group &&
+          selectedConversation.peer_status === "pending");
+
+      if (chatInactive) {
+        if (selectedConversation.my_status === "pending") {
+          return "Accept invitation to start messaging...";
+        }
+        if (selectedConversation.my_status === "rejected") {
+          return "Chat request declined";
+        }
+        if (
+          !selectedConversation.is_group &&
+          selectedConversation.peer_status === "pending"
+        ) {
+          return "Waiting for user to accept request...";
+        }
+        if (
+          !selectedConversation.is_group &&
+          selectedConversation.peer_status === "rejected"
+        ) {
+          return "Chat request was declined";
+        }
+      }
+    }
+
+    return "Type a message...";
+  };
+
   return (
     <div className="p-4 border-t border-slate-700 bg-slate-800 relative">
       <form onSubmit={handleSubmit} className="flex items-center gap-2">
@@ -66,7 +104,7 @@ export function MessageInput({
         />
 
         <Input
-          placeholder="Type a message..."
+          placeholder={getPlaceholderText()}
           className="bg-slate-700 border-slate-600 text-slate-200 placeholder:text-slate-400"
           value={newMessage}
           onChange={(e) => onMessageChange(e.target.value)}

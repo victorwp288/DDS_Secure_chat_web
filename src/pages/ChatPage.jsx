@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useMobile } from "../hooks/use-mobile";
 import { useSignal } from "../lib/signalContext.jsx";
@@ -65,6 +65,47 @@ export default function ChatPage() {
 
   const { allUsers } = useAllUsers(currentUser?.id);
 
+  // Memoize callback functions to prevent unnecessary re-renders
+  const handleNewMessage = useCallback(
+    (newMessage) => {
+      setMessages((prevMessages) => {
+        if (prevMessages.some((msg) => msg.id === newMessage.id)) {
+          return prevMessages;
+        }
+        return [...prevMessages, newMessage];
+      });
+    },
+    [setMessages]
+  );
+
+  const handleConversationUpdate = useCallback(
+    (updateFunction) => {
+      setConversations(updateFunction);
+    },
+    [setConversations]
+  );
+
+  // Memoize additional callbacks passed to child components
+  const handleMobileMenuClose = useCallback(() => {
+    setIsMobileMenuOpen(false);
+  }, []);
+
+  const handleMobileMenuToggle = useCallback(() => {
+    setIsMobileMenuOpen(true);
+  }, []);
+
+  const handleSearchChange = useCallback((query) => {
+    setSearchQuery(query);
+  }, []);
+
+  const handleMessageChange = useCallback((message) => {
+    setNewMessage(message);
+  }, []);
+
+  const handleFileSelect = useCallback((file) => {
+    setSelectedFile(file);
+  }, []);
+
   // Set up realtime subscriptions
   useRealtimeSubscriptions({
     selectedConversation,
@@ -73,53 +114,61 @@ export default function ChatPage() {
     isReady,
     signalContext: sig,
     conversations,
-    onNewMessage: (newMessage) => {
-      setMessages((prevMessages) => {
-        if (prevMessages.some((msg) => msg.id === newMessage.id)) {
-          return prevMessages;
-        }
-        return [...prevMessages, newMessage];
-      });
-    },
-    onConversationUpdate: setConversations,
+    onNewMessage: handleNewMessage,
+    onConversationUpdate: handleConversationUpdate,
+    onSelectedConversationUpdate: setSelectedConversation,
     fetchAndFormatSingleConversation,
   });
 
   // Handle conversation selection
-  const handleConversationSelect = (conversation) => {
-    setError(null);
-    setSelectedConversation(conversation);
-  };
+  const handleConversationSelect = useCallback(
+    (conversation) => {
+      setError(null);
+      setSelectedConversation(conversation);
+    },
+    [setError]
+  );
 
   // Handle accepting conversation
-  const handleAcceptConversationWrapper = async (conversationId) => {
-    try {
-      const updatedConv = await handleAcceptConversation(
-        conversationId,
-        currentUser?.id
-      );
-      if (updatedConv) {
-        setSelectedConversation(updatedConv);
+  const handleAcceptConversationWrapper = useCallback(
+    async (conversationId) => {
+      try {
+        const updatedConv = await handleAcceptConversation(
+          conversationId,
+          currentUser?.id
+        );
+        if (updatedConv) {
+          setSelectedConversation(updatedConv);
+        }
+      } catch (err) {
+        setError(err.message);
       }
-    } catch (err) {
-      setError(err.message);
-    }
-  };
+    },
+    [handleAcceptConversation, currentUser?.id, setError]
+  );
 
   // Handle rejecting conversation
-  const handleRejectConversationWrapper = async (conversationId) => {
-    try {
-      await handleRejectConversation(conversationId, currentUser?.id);
-      if (selectedConversation?.id === conversationId) {
-        setSelectedConversation(null);
+  const handleRejectConversationWrapper = useCallback(
+    async (conversationId) => {
+      try {
+        await handleRejectConversation(conversationId, currentUser?.id);
+        if (selectedConversation?.id === conversationId) {
+          setSelectedConversation(null);
+        }
+      } catch (err) {
+        setError(err.message);
       }
-    } catch (err) {
-      setError(err.message);
-    }
-  };
+    },
+    [
+      handleRejectConversation,
+      currentUser?.id,
+      selectedConversation?.id,
+      setError,
+    ]
+  );
 
   // Handle sending messages
-  const handleSendMessage = async () => {
+  const handleSendMessage = useCallback(async () => {
     const result = await sendMessage(
       selectedConversation,
       newMessage,
@@ -130,187 +179,214 @@ export default function ChatPage() {
       setNewMessage("");
       setSelectedFile(null);
     }
-  };
+  }, [
+    sendMessage,
+    selectedConversation,
+    newMessage,
+    selectedFile,
+    setMessages,
+  ]);
 
   // Handle user selection for new chat
-  const handleUserSelect = async (selectedUser) => {
-    console.log("Selected user to start chat with:", selectedUser);
-    if (!currentUser || !profile) {
-      console.error("Current user or profile not loaded.");
-      return;
-    }
-    if (selectedUser.id === currentUser.id) {
-      console.warn("Cannot start chat with self.");
-      return;
-    }
+  const handleUserSelect = useCallback(
+    async (selectedUser) => {
+      console.log("Selected user to start chat with:", selectedUser);
+      if (!currentUser || !profile) {
+        console.error("Current user or profile not loaded.");
+        return;
+      }
+      if (selectedUser.id === currentUser.id) {
+        console.warn("Cannot start chat with self.");
+        return;
+      }
 
-    try {
-      // Check if a conversation already exists
-      const existingConversation = conversations.find((conv) => {
-        if (!conv.participants || conv.participants.length !== 2) return false;
-        const hasCurrentUser = conv.participants.some(
-          (p) => p.id === currentUser.id
-        );
-        const hasSelectedUser = conv.participants.some(
-          (p) => p.id === selectedUser.id
-        );
-        return hasCurrentUser && hasSelectedUser;
-      });
+      try {
+        // Check if a conversation already exists
+        const existingConversation = conversations.find((conv) => {
+          if (!conv.participants || conv.participants.length !== 2)
+            return false;
+          const hasCurrentUser = conv.participants.some(
+            (p) => p.id === currentUser.id
+          );
+          const hasSelectedUser = conv.participants.some(
+            (p) => p.id === selectedUser.id
+          );
+          return hasCurrentUser && hasSelectedUser;
+        });
 
-      if (existingConversation) {
-        console.log("Found existing conversation:", existingConversation);
-        setSelectedConversation(existingConversation);
-      } else {
-        console.log("No existing conversation found, creating new one...");
-        // Create New Conversation
-        const { data: newConvData, error: convInsertError } = await supabase
+        if (existingConversation) {
+          console.log("Found existing conversation:", existingConversation);
+          setSelectedConversation(existingConversation);
+        } else {
+          console.log("No existing conversation found, creating new one...");
+          // Create New Conversation
+          const { data: newConvData, error: convInsertError } = await supabase
+            .from("conversations")
+            .insert({})
+            .select()
+            .single();
+
+          if (convInsertError) throw convInsertError;
+          const newConversationId = newConvData.id;
+          console.log("Created new conversation with ID:", newConversationId);
+
+          // Add Participants with appropriate status
+          const { error: participantInsertError } = await supabase
+            .from("conversation_participants")
+            .insert([
+              {
+                conversation_id: newConversationId,
+                profile_id: currentUser.id,
+                status: "accepted",
+              },
+              {
+                conversation_id: newConversationId,
+                profile_id: selectedUser.id,
+                status: "pending",
+              },
+            ]);
+
+          if (participantInsertError) throw participantInsertError;
+          console.log("Added participants to new conversation.");
+
+          // Construct new conversation object for UI state
+          const newConversationForState = {
+            id: newConversationId,
+            name: selectedUser.full_name || selectedUser.username,
+            lastMessage: "",
+            time: "",
+            unread: 0,
+            avatar: selectedUser.avatar_url,
+            participants: [
+              {
+                id: profile.id,
+                username: profile.username,
+                full_name: profile.full_name,
+                avatar_url: profile.avatar_url,
+                status: profile.status,
+              },
+              {
+                id: selectedUser.id,
+                username: selectedUser.username,
+                full_name: selectedUser.full_name,
+                avatar_url: selectedUser.avatar_url,
+                status: "offline",
+              },
+            ],
+            is_group: false,
+            group_name: null,
+            group_avatar_url: null,
+            my_status: "accepted",
+            peer_status: "pending",
+          };
+
+          // Update State
+          setConversations((prev) => [newConversationForState, ...prev]);
+          setSelectedConversation(newConversationForState);
+          console.log(
+            "Set new conversation as selected:",
+            newConversationForState
+          );
+        }
+      } catch (err) {
+        console.error("Error starting chat:", err);
+        setError("Failed to start chat. " + err.message);
+      }
+    },
+    [
+      currentUser,
+      profile,
+      conversations,
+      setError,
+      setConversations,
+      setSelectedConversation,
+    ]
+  );
+
+  // Handle group creation
+  const handleCreateGroup = useCallback(
+    async ({ name: groupName, memberIds }) => {
+      if (!currentUser || !profile) {
+        setError("Current user or profile not loaded. Cannot create group.");
+        return;
+      }
+      if (!groupName || memberIds.length === 0) {
+        setError("Group name and at least one member are required.");
+        return;
+      }
+
+      setError(null);
+
+      try {
+        // Create a conversation row with is_group: true
+        const { data: convData, error: convInsertError } = await supabase
           .from("conversations")
-          .insert({})
+          .insert({ is_group: true, group_name: groupName })
           .select()
           .single();
 
         if (convInsertError) throw convInsertError;
-        const newConversationId = newConvData.id;
-        console.log("Created new conversation with ID:", newConversationId);
+        const newConversationId = convData.id;
 
-        // Add Participants with appropriate status
+        // Add all selected users + yourself as participants
+        const participantObjects = memberIds.map((id) => ({
+          conversation_id: newConversationId,
+          profile_id: id,
+          status: "pending",
+        }));
+        participantObjects.push({
+          conversation_id: newConversationId,
+          profile_id: currentUser.id,
+          status: "accepted",
+        });
+
         const { error: participantInsertError } = await supabase
           .from("conversation_participants")
-          .insert([
-            {
-              conversation_id: newConversationId,
-              profile_id: currentUser.id,
-              status: "accepted",
-            },
-            {
-              conversation_id: newConversationId,
-              profile_id: selectedUser.id,
-              status: "pending",
-            },
-          ]);
+          .insert(participantObjects);
 
         if (participantInsertError) throw participantInsertError;
-        console.log("Added participants to new conversation.");
 
-        // Construct new conversation object for UI state
-        const newConversationForState = {
+        // Construct new group object for UI state
+        const groupParticipantsProfiles = [
+          profile,
+          ...allUsers.filter((u) => memberIds.includes(u.id)),
+        ];
+
+        const newGroupForState = {
           id: newConversationId,
-          name: selectedUser.full_name || selectedUser.username,
-          lastMessage: "",
-          time: "",
+          name: groupName,
+          lastMessage: "Group created",
+          time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
           unread: 0,
-          avatar: selectedUser.avatar_url,
-          participants: [
-            {
-              id: profile.id,
-              username: profile.username,
-              full_name: profile.full_name,
-              avatar_url: profile.avatar_url,
-              status: profile.status,
-            },
-            {
-              id: selectedUser.id,
-              username: selectedUser.username,
-              full_name: selectedUser.full_name,
-              avatar_url: selectedUser.avatar_url,
-              status: "offline",
-            },
-          ],
-          is_group: false,
-          group_name: null,
+          avatar: null,
+          participants: groupParticipantsProfiles,
+          is_group: true,
+          group_name: groupName,
           group_avatar_url: null,
           my_status: "accepted",
-          peer_status: "pending",
         };
 
         // Update State
-        setConversations((prev) => [newConversationForState, ...prev]);
-        setSelectedConversation(newConversationForState);
-        console.log(
-          "Set new conversation as selected:",
-          newConversationForState
-        );
+        setConversations((prev) => [newGroupForState, ...prev]);
+        setSelectedConversation(newGroupForState);
+        setError(null);
+      } catch (err) {
+        console.error("Error creating group:", err);
+        setError(`Failed to create group: ${err.message}`);
       }
-    } catch (err) {
-      console.error("Error starting chat:", err);
-      setError("Failed to start chat. " + err.message);
-    }
-  };
-
-  // Handle group creation
-  const handleCreateGroup = async ({ name: groupName, memberIds }) => {
-    if (!currentUser || !profile) {
-      setError("Current user or profile not loaded. Cannot create group.");
-      return;
-    }
-    if (!groupName || memberIds.length === 0) {
-      setError("Group name and at least one member are required.");
-      return;
-    }
-
-    setError(null);
-
-    try {
-      // Create a conversation row with is_group: true
-      const { data: convData, error: convInsertError } = await supabase
-        .from("conversations")
-        .insert({ is_group: true, group_name: groupName })
-        .select()
-        .single();
-
-      if (convInsertError) throw convInsertError;
-      const newConversationId = convData.id;
-
-      // Add all selected users + yourself as participants
-      const participantObjects = memberIds.map((id) => ({
-        conversation_id: newConversationId,
-        profile_id: id,
-        status: "pending",
-      }));
-      participantObjects.push({
-        conversation_id: newConversationId,
-        profile_id: currentUser.id,
-        status: "accepted",
-      });
-
-      const { error: participantInsertError } = await supabase
-        .from("conversation_participants")
-        .insert(participantObjects);
-
-      if (participantInsertError) throw participantInsertError;
-
-      // Construct new group object for UI state
-      const groupParticipantsProfiles = [
-        profile,
-        ...allUsers.filter((u) => memberIds.includes(u.id)),
-      ];
-
-      const newGroupForState = {
-        id: newConversationId,
-        name: groupName,
-        lastMessage: "Group created",
-        time: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        unread: 0,
-        avatar: null,
-        participants: groupParticipantsProfiles,
-        is_group: true,
-        group_name: groupName,
-        group_avatar_url: null,
-        my_status: "accepted",
-      };
-
-      // Update State
-      setConversations((prev) => [newGroupForState, ...prev]);
-      setSelectedConversation(newGroupForState);
-      setError(null);
-    } catch (err) {
-      console.error("Error creating group:", err);
-      setError(`Failed to create group: ${err.message}`);
-    }
-  };
+    },
+    [
+      currentUser,
+      profile,
+      allUsers,
+      setError,
+      setConversations,
+      setSelectedConversation,
+    ]
+  );
 
   // Handle any global error from the current user, conversations, messages, or send operations
   const globalError =
@@ -348,7 +424,8 @@ export default function ChatPage() {
         <ChatSidebar
           isMobile={isMobile}
           isMobileMenuOpen={isMobileMenuOpen}
-          onMobileMenuClose={() => setIsMobileMenuOpen(false)}
+          onMobileMenuClose={handleMobileMenuClose}
+          onMobileMenuToggle={handleMobileMenuToggle}
           profile={profile}
           conversations={conversations}
           selectedConversation={selectedConversation}
@@ -356,7 +433,7 @@ export default function ChatPage() {
           onAcceptConversation={handleAcceptConversationWrapper}
           onRejectConversation={handleRejectConversationWrapper}
           searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
+          onSearchChange={handleSearchChange}
           currentUser={currentUser}
           allUsers={allUsers}
           onUserSelect={handleUserSelect}
@@ -368,7 +445,7 @@ export default function ChatPage() {
       {/* Main Chat Window */}
       <ChatWindow
         isMobile={isMobile}
-        onMobileMenuToggle={() => setIsMobileMenuOpen(true)}
+        onMobileMenuToggle={handleMobileMenuToggle}
         selectedConversation={selectedConversation}
         loadingConversations={conversationsLoading}
         currentUser={currentUser}
@@ -379,10 +456,10 @@ export default function ChatPage() {
         messagesLoading={messagesLoading}
         messagesEndRef={messagesEndRef}
         newMessage={newMessage}
-        onMessageChange={setNewMessage}
+        onMessageChange={handleMessageChange}
         onSendMessage={handleSendMessage}
         selectedFile={selectedFile}
-        onFileSelect={setSelectedFile}
+        onFileSelect={handleFileSelect}
         isReady={isReady}
         sendLoading={false}
       />

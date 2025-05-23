@@ -7,8 +7,14 @@ export function MessageList({
   selectedConversation,
   messagesEndRef,
 }) {
+  // Check if chat is inactive due to status issues
   const chatInactive =
-    selectedConversation && selectedConversation.my_status !== "accepted";
+    selectedConversation &&
+    (selectedConversation.my_status !== "accepted" ||
+      (!selectedConversation.is_group &&
+        selectedConversation.peer_status === "rejected") ||
+      (!selectedConversation.is_group &&
+        selectedConversation.peer_status === "pending"));
 
   const renderEmptyState = () => {
     if (!selectedConversation) {
