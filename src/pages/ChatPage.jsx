@@ -57,11 +57,11 @@ export default function ChatPage() {
     signalStore
   );
 
-  const { sendMessage, error: sendError } = useSendMessage(
-    sig,
-    currentUser,
-    profile
-  );
+  const {
+    sendMessage,
+    error: sendError,
+    sendingStatus,
+  } = useSendMessage(sig, currentUser, profile);
 
   const { allUsers } = useAllUsers(currentUser?.id);
 
@@ -169,15 +169,42 @@ export default function ChatPage() {
 
   // Handle sending messages
   const handleSendMessage = useCallback(async () => {
+    if (!newMessage.trim() && !selectedFile) return;
+
+    const tempMessage = newMessage;
+    const tempFile = selectedFile;
+
+    // Clear input immediately for better UX
+    setNewMessage("");
+    setSelectedFile(null);
+
+    const handleOptimisticUpdate = (optimisticMessage) => {
+      setMessages((prevMessages) => [...prevMessages, optimisticMessage]);
+    };
+
     const result = await sendMessage(
       selectedConversation,
-      newMessage,
-      selectedFile
+      tempMessage,
+      tempFile,
+      handleOptimisticUpdate
     );
+
     if (result?.success) {
-      setMessages((prevMessages) => [...prevMessages, result.message]);
-      setNewMessage("");
-      setSelectedFile(null);
+      // Replace optimistic message with real message
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          msg.id === result.optimisticId ? result.message : msg
+        )
+      );
+    } else if (result?.optimisticId) {
+      // Mark optimistic message as failed
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) =>
+          msg.id === result.optimisticId
+            ? { ...msg, status: "failed", isOptimistic: false }
+            : msg
+        )
+      );
     }
   }, [
     sendMessage,
@@ -462,6 +489,7 @@ export default function ChatPage() {
         onFileSelect={handleFileSelect}
         isReady={isReady}
         sendLoading={false}
+        sendingStatus={sendingStatus}
       />
     </div>
   );

@@ -178,7 +178,88 @@ export const buildSession = async (
   }
 };
 
+// Session cache to avoid redundant setup
+const sessionCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 /**
+ * Check if a session is cached and still valid
+ */
+export const getCachedSession = (addressStr) => {
+  const cached = sessionCache.get(addressStr);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.session;
+  }
+  return null;
+};
+
+/**
+ * Cache a session for future use
+ */
+export const cacheSession = (addressStr, session) => {
+  sessionCache.set(addressStr, {
+    session,
+    timestamp: Date.now(),
+  });
+};
+
+/**
+ * Clear expired sessions from cache
+ */
+export const clearExpiredSessions = () => {
+  const now = Date.now();
+  for (const [key, value] of sessionCache.entries()) {
+    if (now - value.timestamp >= CACHE_TTL) {
+      sessionCache.delete(key);
+    }
+  }
+};
+
+// Automatically clear expired sessions every 2 minutes
+setInterval(clearExpiredSessions, 2 * 60 * 1000);
+
+/**
+ * Optimized encryption function with session caching
+ */
+export const encryptMessageOptimized = async (
+  store,
+  recipientId,
+  deviceId,
+  plaintextBuffer
+) => {
+  const recipientAddress = new SignalProtocolAddress(recipientId, deviceId);
+  const addressStr = recipientAddress.toString();
+
+  // Try to use cached session first
+  let sessionCipher = getCachedSession(addressStr);
+
+  if (!sessionCipher) {
+    sessionCipher = new SessionCipher(store, recipientAddress);
+    cacheSession(addressStr, sessionCipher);
+  }
+
+  console.log(
+    `Encrypting message for ${recipientId}:${deviceId} (cached: ${!!getCachedSession(
+      addressStr
+    )})`
+  );
+
+  try {
+    const ciphertext = await sessionCipher.encrypt(plaintextBuffer);
+    console.log(
+      `Message encrypted (type ${ciphertext.type}) for ${recipientId}:${deviceId}`
+    );
+    return ciphertext;
+  } catch (error) {
+    console.error("Error encrypting message:", error);
+    // Remove from cache if encryption failed
+    sessionCache.delete(addressStr);
+    throw error;
+  }
+};
+
+/**
+ * Original encryption function (for backward compatibility)
  * Encrypts a message for a recipient.
  * Establishes a session if one doesn't exist (via PreKeyWhisperMessage).
  * @param {SignalProtocolStore} store - The Signal protocol store implementation.

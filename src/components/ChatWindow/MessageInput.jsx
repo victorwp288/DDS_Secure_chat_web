@@ -14,12 +14,14 @@ export function MessageInput({
   isReady,
   loading,
   selectedConversation,
+  sendingStatus,
 }) {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const fileInputRef = useRef();
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (!isMessageSendable()) return;
     onSendMessage();
   };
 
@@ -44,10 +46,21 @@ export function MessageInput({
     onMessageChange(newMessage + emoji);
   };
 
-  const isDisabled = disabled || !isReady || loading;
+  const isMessageSendable = () => {
+    return (newMessage.trim() || selectedFile) && !isDisabled;
+  };
+
+  const isDisabled =
+    disabled ||
+    !isReady ||
+    loading ||
+    sendingStatus === "encrypting" ||
+    sendingStatus === "sending";
 
   const getPlaceholderText = () => {
     if (!isReady) return "Initializing secure session...";
+    if (sendingStatus === "encrypting") return "Encrypting message...";
+    if (sendingStatus === "sending") return "Sending message...";
     if (loading) return "Sending...";
 
     if (selectedConversation) {
@@ -81,6 +94,20 @@ export function MessageInput({
     }
 
     return "Type a message...";
+  };
+
+  const getSendButtonContent = () => {
+    if (sendingStatus === "encrypting") {
+      return (
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+      );
+    }
+    if (sendingStatus === "sending") {
+      return (
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+      );
+    }
+    return <Send className="h-5 w-5" />;
   };
 
   return (
@@ -124,10 +151,10 @@ export function MessageInput({
         <Button
           type="submit"
           size="icon"
-          className="bg-emerald-500 hover:bg-emerald-600 text-white"
-          disabled={(!newMessage.trim() && !selectedFile) || isDisabled}
+          className="bg-emerald-500 hover:bg-emerald-600 text-white disabled:opacity-50"
+          disabled={!isMessageSendable()}
         >
-          <Send className="h-5 w-5" />
+          {getSendButtonContent()}
         </Button>
       </form>
 
@@ -136,6 +163,23 @@ export function MessageInput({
       {selectedFile && (
         <div className="text-slate-400 text-xs mt-2 ml-2">
           Attached: {selectedFile.name}
+        </div>
+      )}
+
+      {sendingStatus && sendingStatus !== "sent" && (
+        <div className="text-xs text-slate-400 mt-1 ml-2 flex items-center gap-1">
+          {sendingStatus === "encrypting" && (
+            <>
+              <div className="h-2 w-2 bg-blue-400 rounded-full animate-pulse" />
+              Encrypting message...
+            </>
+          )}
+          {sendingStatus === "sending" && (
+            <>
+              <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse" />
+              Sending message...
+            </>
+          )}
         </div>
       )}
     </div>

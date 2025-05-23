@@ -21,6 +21,7 @@ export function ChatWindow({
   onFileSelect,
   isReady,
   sendLoading,
+  sendingStatus,
 }) {
   // Check if chat is inactive due to status issues
   const chatInactive =
@@ -61,6 +62,7 @@ export function ChatWindow({
         isReady={isReady}
         loading={sendLoading}
         selectedConversation={selectedConversation}
+        sendingStatus={sendingStatus}
       />
     </div>
   );

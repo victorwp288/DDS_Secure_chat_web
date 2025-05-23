@@ -1,4 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Check, CheckCheck, Clock, AlertCircle } from "lucide-react";
 
 export function MessageBubble({ message }) {
   const renderContent = () => {
@@ -25,9 +26,43 @@ export function MessageBubble({ message }) {
     }
   };
 
+  const renderStatusIcon = () => {
+    if (!message.isSelf) return null;
+
+    const iconClassName = "h-3 w-3 ml-1 inline";
+
+    switch (message.status) {
+      case "sending":
+        return (
+          <Clock className={`${iconClassName} text-slate-400 animate-pulse`} />
+        );
+      case "sent":
+        return <Check className={`${iconClassName} text-slate-400`} />;
+      case "delivered":
+        return <CheckCheck className={`${iconClassName} text-slate-400`} />;
+      case "failed":
+        return <AlertCircle className={`${iconClassName} text-red-400`} />;
+      default:
+        return message.isOptimistic ? (
+          <Clock className={`${iconClassName} text-slate-400 animate-pulse`} />
+        ) : null;
+    }
+  };
+
+  const getMessageOpacity = () => {
+    if (message.isOptimistic || message.status === "sending") {
+      return "opacity-70";
+    }
+    return "opacity-100";
+  };
+
   return (
     <div className={`flex ${message.isSelf ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[80%] ${message.isSelf ? "order-2" : "order-1"}`}>
+      <div
+        className={`max-w-[80%] ${
+          message.isSelf ? "order-2" : "order-1"
+        } ${getMessageOpacity()}`}
+      >
         {!message.isSelf && (
           <div className="flex items-center gap-2 mb-1">
             <Avatar className="h-6 w-6">
@@ -55,11 +90,12 @@ export function MessageBubble({ message }) {
           <p>{renderContent()}</p>
         </div>
         <p
-          className={`text-xs text-slate-400 mt-1 ${
-            message.isSelf ? "text-right" : "text-left"
+          className={`text-xs text-slate-400 mt-1 flex items-center ${
+            message.isSelf ? "justify-end" : "justify-start"
           }`}
         >
           {message.timestamp}
+          {renderStatusIcon()}
         </p>
       </div>
     </div>
