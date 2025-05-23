@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#064e3b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#065f46;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#bg)" stroke="#047857" stroke-width="8"/>
+  
+  <!-- Chat bubble -->
+  <path d="M160 180 C160 160, 180 140, 200 140 L340 140 C360 140, 380 160, 380 180 L380 260 C380 280, 360 300, 340 300 L220 300 L180 330 L180 300 C170 300, 160 290, 160 280 Z" 
+        fill="#ffffff" opacity="0.9"/>
+  
+  <!-- Lock icon inside chat bubble -->
+  <g transform="translate(256, 230)">
+    <!-- Lock body -->
+    <rect x="-20" y="-10" width="40" height="30" rx="3" fill="#064e3b"/>
+    
+    <!-- Lock shackle -->
+    <path d="M-15 -10 C-15 -20, -10 -25, 0 -25 C10 -25, 15 -20, 15 -10" 
+          stroke="#064e3b" stroke-width="4" fill="none"/>
+    
+    <!-- Lock keyhole -->
+    <circle cx="0" cy="0" r="3" fill="#ffffff"/>
+    <rect x="-1" y="2" width="2" height="6" fill="#ffffff"/>
+  </g>
+  
+  <!-- Signal dots for encryption -->
+  <circle cx="200" cy="160" r="3" fill="#10b981"/>
+  <circle cx="210" cy="160" r="3" fill="#10b981"/>
+  <circle cx="220" cy="160" r="3" fill="#10b981"/>
+</svg> 

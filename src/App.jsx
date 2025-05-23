@@ -10,6 +10,7 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage"; // Import the Forgo
 import ChatPage from "./pages/ChatPage"; // Import the ChatPage
 import AboutPage from "./pages/AboutPage"; // Import the AboutPage
 import CryptoTestPage from "./pages/CryptoTestPage"; // Import the CryptoTestPage
+import PWAInstallPrompt from "./components/PWAInstallPrompt"; // Import PWA install prompt
 import { supabase } from "./lib/supabaseClient"; // Assuming client is exported as supabase
 import { SignalProvider } from "./lib/signalContext";
 
@@ -46,6 +47,9 @@ function App() {
   return (
     <SignalProvider userId={session?.user?.id}>
       <Router>
+        {/* PWA Install Prompt - shown globally */}
+        <PWAInstallPrompt />
+
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/settings" element={<SettingsPage />} />

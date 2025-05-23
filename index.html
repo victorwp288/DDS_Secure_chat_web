@@ -2,13 +2,58 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/lock-icon.svg" />
+
+    <!-- PWA Icons and Favicons -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" href="/app-icon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+
+    <!-- Viewport and PWA Meta Tags -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DDS Secure Chat App</title>
+    <meta name="theme-color" content="#064e3b" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="SecureChat" />
+
+    <!-- SEO Meta Tags -->
+    <title>SecureChat - End-to-End Encrypted Messaging</title>
     <meta
       name="description"
-      content="End-to-end encrypted messaging platform built with the Signal Protocol. Secure, private, and fast communication."
+      content="A secure, privacy-focused messaging platform with end-to-end encryption using the Signal Protocol. Chat privately and securely with anyone, anywhere."
     />
+    <meta
+      name="keywords"
+      content="secure messaging, encrypted chat, privacy, Signal Protocol, end-to-end encryption"
+    />
+    <meta name="author" content="SecureChat Team" />
+
+    <!-- Open Graph / Social Media Meta Tags -->
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:title"
+      content="SecureChat - End-to-End Encrypted Messaging"
+    />
+    <meta
+      property="og:description"
+      content="A secure, privacy-focused messaging platform with end-to-end encryption using the Signal Protocol."
+    />
+    <meta property="og:image" content="/pwa-512x512.png" />
+    <meta property="og:url" content="https://securechat.app" />
+
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="SecureChat - End-to-End Encrypted Messaging"
+    />
+    <meta
+      name="twitter:description"
+      content="A secure, privacy-focused messaging platform with end-to-end encryption using the Signal Protocol."
+    />
+    <meta name="twitter:image" content="/pwa-512x512.png" />
   </head>
   <body>
     <div id="root"></div>
