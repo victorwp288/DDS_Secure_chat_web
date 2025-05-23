@@ -114,10 +114,7 @@ export default function SignupPage() {
           setError(
             "Account created! Please check your email to confirm your account before logging in."
           );
-          // Optionally sign the user out until confirmed
-          // await supabase.auth.signOut();
         } else if (signUpData.user) {
-          // User might be auto-confirmed or already confirmed
           console.log("Navigating to chat...");
           navigate("/chat");
         } else {
@@ -127,19 +124,15 @@ export default function SignupPage() {
           );
         }
       } else {
-        // This block handles the case where keys *already* exist
         console.log(
           `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
         );
-        // If keys exist, the user should be okay to proceed
         console.log("Existing keys found. Navigating to chat...");
         navigate("/chat");
       }
     } catch (err) {
-      // This outer catch handles errors from Supabase signup or profile upsert primarily
       console.error("Error during sign up process (before key gen):", err);
       if (!error) {
-        // Avoid overwriting specific errors like 'email exists'
         setError(`Signup failed: ${err.message || "Please try again."}`);
       }
     } finally {

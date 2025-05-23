@@ -5,14 +5,7 @@ import {
   SignalProtocolAddress,
   SessionBuilder,
   SessionCipher,
-  //setLogger,
 } from "@privacyresearch/libsignal-protocol-typescript";
-// import { get } from "./backend"; // Assuming backend.js is in the same directory or adjust path - REMOVED
-
-// --- Enable Signal Library Debug Logging ---
-// Uncomment the line below to see detailed logs from the Signal library itself
-//setLogger(console.log);
-// ---
 
 /**
  * Represents the public key bundle needed to establish a session.

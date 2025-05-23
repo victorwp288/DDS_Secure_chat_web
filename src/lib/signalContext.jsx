@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // SignalContext.jsx
 import { createContext, useContext, useEffect, useState } from "react";
 import { supabase } from "./supabaseClient"; // Adjusted path assuming supabaseClient is in src/lib
@@ -8,13 +9,11 @@ import { initializeSignalProtocol } from "./signalUtils"; // Assuming signalUtil
 const SignalContext = createContext();
 
 export function SignalProvider({ children }) {
-  // ───────── State we expose ─────────
   const [signalStore, setSignalStore] = useState(null);
   const [deviceId, setDeviceId] = useState(null);
   const [isReady, setIsReady] = useState(false);
   const [initError, setInitError] = useState(null);
 
-  // ───────── Who is logged-in right now? ─────────
   const [userId, setUserId] = useState(null);
 
   useEffect(() => {
@@ -80,14 +79,10 @@ export function SignalProvider({ children }) {
         let finalDeviceId;
 
         if (bundle) {
-          // New keys were generated, so a new bundle exists.
-          // We need to register this as a new device (or let the server assign a new ID).
-          // We will NOT send an existingDeviceId from localStorage.
           console.log(
             `[SignalContext Store Effect] New bundle generated. Registering new device...`
           );
           const response = await post("/device/register", {
-            // deviceId: null, // Explicitly null or omitted for server to generate/assign new
             ...bundle,
             userId: userId,
           });
@@ -108,17 +103,12 @@ export function SignalProvider({ children }) {
             `[SignalContext Store Effect] Saved new deviceId from server to localStorage: ${finalDeviceId}`
           );
         } else {
-          // Keys already existed, bundle is null. Use existing deviceId.
           console.log(
             `[SignalContext Store Effect] Existing keys found. Using deviceId from localStorage.`
           );
           const existingDeviceIdFromStorage =
             localStorage.getItem(localStorageKey);
           if (!existingDeviceIdFromStorage) {
-            // This is an inconsistent state: keys exist but no deviceId in localStorage.
-            // This case should ideally not happen if deviceId is always saved when keys are first created.
-            // For now, we'll throw an error, as proceeding could lead to more issues.
-            // A more robust solution might involve trying to re-register or clear keys.
             console.error(
               "[SignalContext Store Effect] CRITICAL: Keys exist in DB, but no deviceId found in localStorage. Manual intervention might be needed."
             );
@@ -130,7 +120,6 @@ export function SignalProvider({ children }) {
           console.log(
             `[SignalContext Store Effect] Using existing deviceId from localStorage: ${finalDeviceId}`
           );
-          // No need to call /device/register as keys and deviceId are presumed to be consistent.
         }
 
         // ---------- 3️⃣ Expose state to the rest of the app ----------

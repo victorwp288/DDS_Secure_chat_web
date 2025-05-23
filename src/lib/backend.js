@@ -4,11 +4,36 @@
 const API = import.meta.env.VITE_BACKEND_URL;
 
 // helper to avoid double-slashes or duplicate "/api"
-function buildUrl(path) {
-  // remove trailing slash from API, if any
-  const base = API.replace(/\/+$/, "");
-  // ensure path starts with a single slash
-  const suffix = path.startsWith("/") ? path : `/${path}`;
+export function buildUrl(path, explicitBaseUrl) {
+  let finalBaseUrl;
+
+  if (arguments.length === 2) {
+    // Second argument was explicitly passed (could be a string, undefined, null, etc.)
+    finalBaseUrl = explicitBaseUrl;
+  } else {
+    // Second argument was not passed, use API as the default
+    finalBaseUrl = API;
+  }
+
+  if (!finalBaseUrl) {
+    throw new Error(
+      "API base URL is not configured. Please set VITE_BACKEND_URL or pass baseUrl to buildUrl."
+    );
+  }
+
+  // remove trailing slash from finalBaseUrl, if any
+  const base = String(finalBaseUrl).replace(/\/+$/, "");
+
+  // determine suffix based on path
+  let suffix = "";
+  if (path === "") {
+    suffix = "/"; // For empty path, add a trailing slash
+  } else if (path !== undefined && path !== null) {
+    // For non-empty, defined, non-null path
+    suffix = String(path).startsWith("/") ? String(path) : `/${String(path)}`;
+  }
+  // If path is undefined or null, suffix remains "", which is correct for tests like 'should handle undefined path'
+
   return `${base}${suffix}`;
 }
 
@@ -44,13 +69,17 @@ export async function get(path) {
       try {
         const { detail } = await res.json();
         if (detail) msg += `: ${detail}`;
-      } catch {}
+      } catch {
+        console.error("Error parsing JSON response:", res.statusText);
+      }
     } else {
       try {
         const err = await res.json();
         if (err?.detail) msg += `: ${err.detail}`;
         else if (err?.message) msg += `: ${err.message}`;
-      } catch {}
+      } catch {
+        console.error("Error parsing JSON response:", res.statusText);
+      }
     }
     throw new Error(msg);
   }

@@ -8,7 +8,6 @@ import ProfilePage from "./pages/ProfilePage"; // Import the ProfilePage
 import LoginPage from "./pages/LoginPage"; // Import the LoginPage
 import ForgotPasswordPage from "./pages/ForgotPasswordPage"; // Import the ForgotPasswordPage
 import ChatPage from "./pages/ChatPage"; // Import the ChatPage
-import CryptoTestPage from "./pages/CryptoTestPage"; // Import the CryptoTestPage
 import AboutPage from "./pages/AboutPage"; // Import the AboutPage
 import { supabase } from "./lib/supabaseClient"; // Assuming client is exported as supabase
 import { SignalProvider } from "./lib/signalContext";
@@ -48,16 +47,13 @@ function App() {
       <Router>
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route path="/crypto-test" element={<CryptoTestPage />} />
-          {/* <Route path="/signup" element={<SignupPage />} /> No need for signup if logged in */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/profile" element={<ProfilePage />} />
-          {/* <Route path="/login" element={<LoginPage />} /> No need for login if logged in */}
-          {/* <Route path="/forgot-password" element={<ForgotPasswordPage />} /> No need if logged in */}
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/signup" element={<SignupPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/about" element={<AboutPage />} />
+		  <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         </Routes>
       </Router>
     </SignalProvider>
