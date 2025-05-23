@@ -54,7 +54,8 @@ export default function ChatPage() {
     currentUser,
     isReady,
     deviceId,
-    signalStore
+    signalStore,
+    profile
   );
 
   const {

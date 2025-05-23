@@ -88,6 +88,36 @@ export async function getCachedMessageContent(userId, messageId) {
   return cachedMsg?.content;
 }
 
+// Helper function to get all cached messages for a conversation
+export async function getCachedMessagesForConversation(userId, conversationId) {
+  if (!userId)
+    throw new Error("getCachedMessagesForConversation requires userId.");
+  if (!conversationId)
+    throw new Error(
+      "getCachedMessagesForConversation requires conversationId."
+    );
+
+  const db = getCacheDb(userId);
+  try {
+    const cachedMessages = await db.messages
+      .where("conversationId")
+      .equals(conversationId)
+      .toArray();
+
+    console.log(
+      `[Dexie Cache] Found ${cachedMessages.length} cached messages for conversation ${conversationId} (User: ${userId})`
+    );
+
+    return cachedMessages;
+  } catch (error) {
+    console.error(
+      `[Dexie Cache] Error getting cached messages for conversation ${conversationId} (User: ${userId}):`,
+      error
+    );
+    return [];
+  }
+}
+
 // REMOVED: Old export
 // export const db = new Dexie("secureChatDatabase");
 

@@ -54,11 +54,13 @@ export function MessageInput({
     disabled ||
     !isReady ||
     loading ||
+    sendingStatus === "uploading" ||
     sendingStatus === "encrypting" ||
     sendingStatus === "sending";
 
   const getPlaceholderText = () => {
     if (!isReady) return "Initializing secure session...";
+    if (sendingStatus === "uploading") return "Uploading file...";
     if (sendingStatus === "encrypting") return "Encrypting message...";
     if (sendingStatus === "sending") return "Sending message...";
     if (loading) return "Sending...";
@@ -97,6 +99,11 @@ export function MessageInput({
   };
 
   const getSendButtonContent = () => {
+    if (sendingStatus === "uploading") {
+      return (
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+      );
+    }
     if (sendingStatus === "encrypting") {
       return (
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
@@ -168,6 +175,12 @@ export function MessageInput({
 
       {sendingStatus && sendingStatus !== "sent" && (
         <div className="text-xs text-slate-400 mt-1 ml-2 flex items-center gap-1">
+          {sendingStatus === "uploading" && (
+            <>
+              <div className="h-2 w-2 bg-purple-400 rounded-full animate-pulse" />
+              Uploading file...
+            </>
+          )}
           {sendingStatus === "encrypting" && (
             <>
               <div className="h-2 w-2 bg-blue-400 rounded-full animate-pulse" />

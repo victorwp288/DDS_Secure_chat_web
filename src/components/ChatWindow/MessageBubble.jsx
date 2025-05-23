@@ -1,10 +1,185 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Check, CheckCheck, Clock, AlertCircle } from "lucide-react";
+import {
+  Check,
+  CheckCheck,
+  Clock,
+  AlertCircle,
+  Download,
+  FileText,
+  Image,
+  Video,
+  Music,
+  Archive,
+} from "lucide-react";
+import { downloadAndDecryptFile } from "../../lib/fileUpload";
+import { useState } from "react";
 
 export function MessageBubble({ message }) {
+  const [downloadingFile, setDownloadingFile] = useState(false);
+
+  // Try to parse message content to extract file info
+  const parseMessageContent = (content) => {
+    try {
+      const parsed = JSON.parse(content);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        ("text" in parsed || "file" in parsed)
+      ) {
+        console.log("Successfully parsed message content:", parsed);
+        return parsed;
+      }
+    } catch {
+      // Not JSON, treat as plain text
+      console.log(
+        "Message content is not JSON, treating as plain text:",
+        content
+      );
+    }
+    return { text: content, file: null };
+  };
+
+  const { text, file } = parseMessageContent(message.content);
+
+  const handleFileDownload = async () => {
+    if (!file || downloadingFile) return;
+
+    setDownloadingFile(true);
+    try {
+      console.log("Starting file download:", file);
+
+      const decryptedFile = await downloadAndDecryptFile(
+        file.path,
+        file.encryptionKey,
+        file.iv,
+        file.originalName,
+        file.mimeType // Pass the original MIME type
+      );
+
+      console.log("File decrypted successfully:", decryptedFile);
+
+      // Create a temporary link and trigger download
+      const link = document.createElement("a");
+      link.href = decryptedFile.url;
+      link.download = file.originalName;
+
+      // Set the MIME type on the link for better browser handling
+      if (file.mimeType) {
+        link.type = file.mimeType;
+      }
+
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      console.log("Download triggered for:", file.originalName);
+
+      // Clean up the object URL
+      setTimeout(() => {
+        URL.revokeObjectURL(decryptedFile.url);
+      }, 1000);
+    } catch (error) {
+      console.error("File download failed:", error);
+      alert("Failed to download file: " + error.message);
+    } finally {
+      setDownloadingFile(false);
+    }
+  };
+
+  const getFileIcon = (mimeType) => {
+    if (!mimeType) return <FileText className="h-5 w-5" />;
+
+    if (mimeType.startsWith("image/")) return <Image className="h-5 w-5" />;
+    if (mimeType.startsWith("video/")) return <Video className="h-5 w-5" />;
+    if (mimeType.startsWith("audio/")) return <Music className="h-5 w-5" />;
+    if (mimeType.includes("pdf")) return <FileText className="h-5 w-5" />;
+    if (mimeType.includes("zip") || mimeType.includes("archive"))
+      return <Archive className="h-5 w-5" />;
+
+    return <FileText className="h-5 w-5" />;
+  };
+
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return "0 Bytes";
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
   const renderContent = () => {
-    if (message.content.startsWith("[File](")) {
-      const match = message.content.match(/\[File\]\((.*?)\)\s*(.*)/);
+    // Handle file attachment
+    if (file) {
+      return (
+        <div className="space-y-2">
+          {/* Text content if present */}
+          {text && text.trim() && (
+            <div className="whitespace-pre-wrap break-words">{text}</div>
+          )}
+
+          {/* File attachment */}
+          <div
+            className={`
+              border rounded-lg p-3 cursor-pointer transition-colors max-w-sm
+              ${
+                message.isSelf
+                  ? "border-blue-300/50 bg-blue-50/10 hover:bg-blue-50/20 text-white"
+                  : "border-slate-600 bg-slate-600/50 hover:bg-slate-600/70 text-slate-100"
+              }
+              ${downloadingFile ? "opacity-50 cursor-not-allowed" : ""}
+            `}
+            onClick={handleFileDownload}
+          >
+            <div className="flex items-center space-x-3">
+              <div
+                className={`
+                p-2 rounded-lg flex-shrink-0
+                ${message.isSelf ? "bg-blue-400/20" : "bg-slate-500/50"}
+              `}
+              >
+                {getFileIcon(file.mimeType)}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm truncate">
+                  {file.originalName}
+                </div>
+                <div
+                  className={`text-xs flex items-center space-x-2 ${
+                    message.isSelf ? "text-blue-100" : "text-slate-300"
+                  }`}
+                >
+                  <span>{formatFileSize(file.originalSize)}</span>
+                  {downloadingFile && <span>• Downloading...</span>}
+                </div>
+              </div>
+
+              <div
+                className={`
+                p-1 rounded-full flex-shrink-0
+                ${message.isSelf ? "bg-blue-400/20" : "bg-slate-500/50"}
+                ${downloadingFile ? "" : "hover:bg-slate-400/50"}
+              `}
+              >
+                {downloadingFile ? (
+                  <div
+                    className={`h-4 w-4 animate-spin rounded-full border-2 border-t-transparent ${
+                      message.isSelf ? "border-white" : "border-slate-300"
+                    }`}
+                  />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Handle legacy file format (fallback)
+    if (text && text.startsWith("[File](")) {
+      const match = text.match(/\[File\]\((.*?)\)\s*(.*)/);
       const url = match?.[1];
       const name = match?.[2] || "Download File";
       return (
@@ -17,86 +192,76 @@ export function MessageBubble({ message }) {
           📎 {name}
         </a>
       );
-    } else if (message.content.startsWith("[File] ")) {
-      return (
-        <span className="text-slate-300">📎 {message.content.slice(7)}</span>
-      );
-    } else {
-      return message.content;
+    } else if (text && text.startsWith("[File] ")) {
+      return <span className="text-slate-300">📎 {text.slice(7)}</span>;
     }
+
+    // Regular text message
+    return (
+      <div className="whitespace-pre-wrap break-words">
+        {text || message.content}
+      </div>
+    );
   };
 
   const renderStatusIcon = () => {
     if (!message.isSelf) return null;
 
-    const iconClassName = "h-3 w-3 ml-1 inline";
-
     switch (message.status) {
       case "sending":
-        return (
-          <Clock className={`${iconClassName} text-slate-400 animate-pulse`} />
-        );
+      case "encrypting":
+      case "uploading":
+        return <Clock className="h-3 w-3 text-gray-400" />;
       case "sent":
-        return <Check className={`${iconClassName} text-slate-400`} />;
+        return <Check className="h-3 w-3 text-gray-400" />;
       case "delivered":
-        return <CheckCheck className={`${iconClassName} text-slate-400`} />;
+        return <CheckCheck className="h-3 w-3 text-gray-400" />;
       case "failed":
-        return <AlertCircle className={`${iconClassName} text-red-400`} />;
+        return <AlertCircle className="h-3 w-3 text-red-400" />;
       default:
-        return message.isOptimistic ? (
-          <Clock className={`${iconClassName} text-slate-400 animate-pulse`} />
-        ) : null;
+        return <Check className="h-3 w-3 text-gray-400" />;
     }
-  };
-
-  const getMessageOpacity = () => {
-    if (message.isOptimistic || message.status === "sending") {
-      return "opacity-70";
-    }
-    return "opacity-100";
   };
 
   return (
-    <div className={`flex ${message.isSelf ? "justify-end" : "justify-start"}`}>
+    <div
+      className={`flex gap-3 p-3 ${
+        message.isSelf ? "flex-row-reverse" : "flex-row"
+      }`}
+    >
+      <Avatar className="h-8 w-8 flex-shrink-0">
+        <AvatarImage src={message.senderAvatar} />
+        <AvatarFallback>
+          {message.senderName ? message.senderName[0] : "?"}
+        </AvatarFallback>
+      </Avatar>
+
       <div
-        className={`max-w-[80%] ${
-          message.isSelf ? "order-2" : "order-1"
-        } ${getMessageOpacity()}`}
+        className={`flex flex-col max-w-xs lg:max-w-md xl:max-w-lg ${
+          message.isSelf ? "items-end" : "items-start"
+        }`}
       >
-        {!message.isSelf && (
-          <div className="flex items-center gap-2 mb-1">
-            <Avatar className="h-6 w-6">
-              <AvatarImage
-                src={message.senderAvatar || "/placeholder.svg"}
-                alt={message.senderName}
-              />
-              <AvatarFallback className="bg-emerald-500 text-white text-xs">
-                {message.senderName
-                  ?.split(" ")
-                  .map((n) => n[0])
-                  .join("") || "??"}
-              </AvatarFallback>
-            </Avatar>
-            <span className="text-xs text-slate-400">{message.senderName}</span>
-          </div>
-        )}
         <div
-          className={`rounded-lg p-3 ${
+          className={`rounded-lg px-3 py-2 shadow-sm ${
             message.isSelf
-              ? "bg-emerald-500 text-white rounded-tr-none"
-              : "bg-slate-700 text-white rounded-tl-none"
-          }`}
+              ? "bg-blue-500 text-white"
+              : "bg-slate-700 text-slate-100"
+          } ${message.isOptimistic ? "opacity-70" : ""}`}
         >
-          <p>{renderContent()}</p>
+          {renderContent()}
         </div>
-        <p
-          className={`text-xs text-slate-400 mt-1 flex items-center ${
-            message.isSelf ? "justify-end" : "justify-start"
+
+        <div
+          className={`flex items-center gap-1 mt-1 text-xs text-slate-400 ${
+            message.isSelf ? "flex-row-reverse" : "flex-row"
           }`}
         >
-          {message.timestamp}
+          <span>{message.timestamp}</span>
           {renderStatusIcon()}
-        </p>
+          {message.isOptimistic && (
+            <span className="text-yellow-400">Sending...</span>
+          )}
+        </div>
       </div>
     </div>
   );

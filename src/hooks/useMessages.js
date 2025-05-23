@@ -3,7 +3,6 @@ import { supabase } from "../lib/supabaseClient";
 import {
   decryptMessage,
   arrayBufferToString,
-  buf2hex,
   hexToUint8Array,
   bundlesToMap,
 } from "../lib/signalUtils";
@@ -12,7 +11,10 @@ import {
   SessionBuilder,
 } from "@privacyresearch/libsignal-protocol-typescript";
 import { get } from "../lib/backend";
-import { cacheSentMessage, getCachedMessageContent } from "../lib/db";
+import {
+  cacheSentMessage,
+  getCachedMessagesForConversation,
+} from "../lib/db.js";
 
 async function safeProcessPreKey(store, userId, deviceId, bundle) {
   const addr = new SignalProtocolAddress(userId, deviceId);
@@ -63,48 +65,57 @@ async function safeProcessPreKey(store, userId, deviceId, bundle) {
     console.log(
       `[safeProcessPreKey] Session built/updated successfully for ${addrStr}.`
     );
+    return true; // Indicate success
   } catch (err) {
     if (err.message?.includes("Identity key changed")) {
       console.warn(
         `[safeProcessPreKey] Genuine identity key rotation detected by processPreKey for ${addrStr}. Clearing old session/identity, re-saving new identity, and retrying processPreKey.`
       );
-      await store.removeSession(addrStr);
-
-      if (typeof store.removeIdentity === "function") {
-        await store.removeIdentity(addrStr);
-        console.log(`[safeProcessPreKey] Removed old identity for ${addrStr}.`);
-      } else {
-        console.warn(
-          `[safeProcessPreKey] store.removeIdentity is not a function. Attempting to overwrite identity for ${addrStr}.`
-        );
-      }
-
-      await store.saveIdentity(addrStr, bundle.identityKey);
-      console.log(
-        `[safeProcessPreKey] Re-saved new identity for ${addrStr} due to rotation detected by processPreKey.`
-      );
 
       try {
+        await store.removeSession(addrStr);
+
+        if (typeof store.removeIdentity === "function") {
+          await store.removeIdentity(addrStr);
+          console.log(
+            `[safeProcessPreKey] Removed old identity for ${addrStr}.`
+          );
+        } else {
+          console.warn(
+            `[safeProcessPreKey] store.removeIdentity is not a function. Attempting to overwrite identity for ${addrStr}.`
+          );
+        }
+
+        await store.saveIdentity(addrStr, bundle.identityKey);
+        console.log(
+          `[safeProcessPreKey] Re-saved new identity for ${addrStr} due to rotation detected by processPreKey.`
+        );
+
+        // Create a new builder instance after clearing session
+        const newBuilder = new SessionBuilder(store, addr);
         console.log(
           `[safeProcessPreKey] Retrying SessionBuilder.processPreKey for ${addrStr} after identity reset...`
         );
-        await builder.processPreKey(bundle);
+        await newBuilder.processPreKey(bundle);
         console.log(
           `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after genuine key rotation.`
         );
+        return true; // Indicate success after retry
       } catch (err2) {
         console.error(
-          `[safeProcessPreKey] Second SessionBuilder.processPreKey FAILED for ${addrStr} even after handling rotation: ${err2.message}. Rethrowing.`,
+          `[safeProcessPreKey] Second SessionBuilder.processPreKey FAILED for ${addrStr} even after handling rotation: ${err2.message}. Skipping this device.`,
           err2
         );
-        throw err2;
+        // Return false to indicate this device should be skipped
+        return false;
       }
     } else {
       console.error(
-        `[safeProcessPreKey] Error during SessionBuilder.processPreKey for ${addrStr} (not identity change): ${err.message}. Rethrowing.`,
+        `[safeProcessPreKey] Error during SessionBuilder.processPreKey for ${addrStr} (not identity change): ${err.message}. Skipping this device.`,
         err
       );
-      throw err;
+      // Return false to indicate this device should be skipped
+      return false;
     }
   }
 }
@@ -114,8 +125,17 @@ export function useMessages(
   currentUser,
   isReady,
   deviceId,
-  signalStore
+  signalStore,
+  profile
 ) {
+  console.log("[useMessages] Hook called with params:", {
+    conversationId: selectedConversation?.id,
+    userId: currentUser?.id,
+    isReady,
+    deviceId: deviceId ? `${deviceId} (exists)` : "null",
+    profileExists: !!profile,
+  });
+
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -125,7 +145,24 @@ export function useMessages(
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Debug: Check conversation status and why useEffect isn't triggering
+  console.log("[useMessages] Checking conversation status for useEffect:", {
+    conversationStatus: selectedConversation?.my_status,
+    expectedStatus: "accepted",
+    statusMatch: selectedConversation?.my_status === "accepted",
+    isReady,
+    deviceId,
+  });
+
   useEffect(() => {
+    console.log("[useMessages] useEffect triggered with:", {
+      isReady,
+      deviceId,
+      selectedConversationId: selectedConversation?.id,
+      currentUserId: currentUser?.id,
+      conversationStatus: selectedConversation?.my_status,
+    });
+
     if (!isReady || !deviceId) {
       console.log(
         "[useMessages] Signal context not ready or deviceId missing, deferring message fetch"
@@ -138,6 +175,11 @@ export function useMessages(
       !currentUser?.id ||
       selectedConversation.my_status !== "accepted"
     ) {
+      console.log("[useMessages] Conversation not valid, clearing messages:", {
+        conversationId: selectedConversation?.id,
+        userId: currentUser?.id,
+        status: selectedConversation?.my_status,
+      });
       setMessages([]);
       setLoading(false);
       return;
@@ -170,42 +212,140 @@ export function useMessages(
 
         if (messagesError) throw messagesError;
 
-        const decryptedMessages = [];
+        // Debug: Show what messages we're working with
+        console.log(
+          `[useMessages] Database messages for conversation ${selectedConversation.id}:`,
+          data.map((msg) => ({
+            id: msg.id,
+            profile_id: msg.profile_id,
+            device_id: msg.device_id,
+            target_device_id: msg.target_device_id,
+            type: msg.type,
+            created_at: msg.created_at,
+            createdAtType: typeof msg.created_at,
+            createdAtDate: new Date(msg.created_at).toISOString(),
+            isSelfSent: msg.profile_id === currentUser.id,
+          }))
+        );
+
+        // Also get cached messages for this conversation (self-sent messages)
+        console.log(
+          `[useMessages] Loading cached messages for conversation ${selectedConversation.id}, user ${currentUser.id}`
+        );
+        const cachedMessages = await getCachedMessagesForConversation(
+          currentUser.id,
+          selectedConversation.id
+        );
+        console.log(
+          `[useMessages] Retrieved ${cachedMessages.length} cached messages:`,
+          cachedMessages.map((msg) => ({
+            id: msg.id,
+            content: msg.content.substring(0, 50) + "...",
+            timestamp: msg.timestamp,
+            timestampType: typeof msg.timestamp,
+            timestampDate: new Date(msg.timestamp).toISOString(),
+          }))
+        );
+
+        // Combine all messages (database + cached) ensuring no duplicates
+        const allMessagesMap = new Map();
+
+        // First add database messages
         for (const msg of data) {
-          if (messages.some((m) => m.id === msg.id)) {
-            console.log(
-              `[useMessages] Skipping msg ${msg.id} - already processed.`
-            );
-            continue;
-          }
+          const messageId = msg.id;
+          allMessagesMap.set(messageId, {
+            source: "database",
+            dbMessage: msg,
+            timestamp: msg.created_at,
+          });
+        }
 
-          let processedContent = null;
-          const senderProfile = msg.profiles;
-          const timestamp = msg.created_at
-            ? new Date(msg.created_at).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : "";
-          const isSelfSent = msg.profile_id === currentUser.id;
-          const myCurrentDeviceId = deviceId;
-
-          if (
-            !isSelfSent &&
-            msg.target_device_id !== undefined &&
-            msg.target_device_id !== null &&
-            msg.target_device_id !== myCurrentDeviceId
-          ) {
-            continue;
-          }
-
-          const cachedContent = await getCachedMessageContent(
-            currentUser.id,
-            msg.id
-          );
-          if (cachedContent) {
-            processedContent = cachedContent;
+        // Then add/update with cached messages (they take precedence for content)
+        for (const cachedMsg of cachedMessages) {
+          const messageId = cachedMsg.id;
+          if (allMessagesMap.has(messageId)) {
+            // Update existing entry with cached content
+            const existing = allMessagesMap.get(messageId);
+            existing.cachedMessage = cachedMsg;
+            existing.hasCachedContent = true;
           } else {
+            // Add new cached-only message
+            allMessagesMap.set(messageId, {
+              source: "cache",
+              cachedMessage: cachedMsg,
+              timestamp: cachedMsg.timestamp,
+              hasCachedContent: true,
+            });
+          }
+        }
+
+        console.log(
+          `[useMessages] Combined ${allMessagesMap.size} unique messages from ${data.length} DB + ${cachedMessages.length} cached`
+        );
+
+        // Convert map to array and process each message
+        const messagesToProcess = Array.from(allMessagesMap.values());
+
+        // Sort by timestamp first
+        messagesToProcess.sort((a, b) => {
+          const aTime = new Date(a.timestamp);
+          const bTime = new Date(b.timestamp);
+          return aTime - bTime;
+        });
+
+        console.log(
+          `[useMessages] Processing ${messagesToProcess.length} messages in chronological order`
+        );
+
+        const decryptedMessages = [];
+
+        for (const messageInfo of messagesToProcess) {
+          const { dbMessage, cachedMessage, hasCachedContent } = messageInfo;
+          const msg = dbMessage || cachedMessage;
+
+          console.log(
+            `[useMessages] Processing message ${msg.id.slice(0, 8)}: source=${
+              messageInfo.source
+            }, hasCached=${hasCachedContent}`
+          );
+
+          // Determine if this is a self-sent message
+          // For database messages, check profile_id against currentUser.id
+          // For cached-only messages, they are always self-sent (we only cache our own messages)
+          const isSelfSent = dbMessage
+            ? dbMessage.profile_id === currentUser.id
+            : true; // Cached-only messages are always self-sent
+
+          console.log(
+            `[useMessages] Message ${msg.id.slice(
+              0,
+              8
+            )} isSelfSent: ${isSelfSent} (dbMessage: ${!!dbMessage}, cachedOnly: ${!dbMessage})`
+          );
+
+          let processedContent;
+
+          // Use cached content if available
+          if (hasCachedContent && cachedMessage?.content) {
+            console.log(
+              `[useMessages] Using cached content for ${msg.id.slice(0, 8)}`
+            );
+            processedContent = cachedMessage.content;
+          } else if (isSelfSent) {
+            // Self-sent message without cache - show placeholder
+            console.warn(
+              `[useMessages] Self-sent message ${msg.id.slice(
+                0,
+                8
+              )} not in cache`
+            );
+            processedContent =
+              "[Self-sent message not in cache - may be from another session]";
+          } else {
+            // Received message - decrypt it
+            console.log(
+              `[useMessages] Decrypting received message ${msg.id.slice(0, 8)}`
+            );
             const dbHexString = msg.body;
             let bodyUint8Array;
             try {
@@ -218,15 +358,25 @@ export function useMessages(
               processedContent = "[DB Body Corrupt]";
               decryptedMessages.push({
                 id: msg.id,
-                senderId: senderProfile?.id || msg.profile_id,
-                senderName:
-                  senderProfile?.full_name ||
-                  senderProfile?.username ||
-                  "Unknown User",
-                senderAvatar: senderProfile?.avatar_url,
+                senderId: isSelfSent
+                  ? currentUser.id
+                  : msg.profiles?.id || msg.profile_id,
+                senderName: isSelfSent
+                  ? "Me"
+                  : msg.profiles?.full_name ||
+                    msg.profiles?.username ||
+                    "Unknown User",
+                senderAvatar: isSelfSent
+                  ? profile?.avatar_url
+                  : msg.profiles?.avatar_url,
                 content: processedContent,
-                timestamp,
-                isSelf: false,
+                timestamp: msg.created_at
+                  ? new Date(msg.created_at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "",
+                isSelf: isSelfSent,
               });
               continue;
             }
@@ -242,7 +392,7 @@ export function useMessages(
                 const plaintextBuffer = await decryptMessage(
                   signalStore,
                   currentUser.id,
-                  myCurrentDeviceId,
+                  deviceId,
                   msg.profile_id,
                   senderDeviceIdNum,
                   { type: msg.type, body: bodyUint8Array }
@@ -308,43 +458,51 @@ export function useMessages(
                     console.log(
                       `[useMessages Recover] Fetched bundle for ${addrStr}.`
                     );
-                    await safeProcessPreKey(
+                    const sessionResult = await safeProcessPreKey(
                       signalStore,
                       msg.profile_id,
                       senderDeviceIdNum,
                       bundleForDevice
                     );
-                    console.log(
-                      `[useMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
-                    );
 
-                    const plaintextBufferRetry = await decryptMessage(
-                      signalStore,
-                      currentUser.id,
-                      myCurrentDeviceId,
-                      msg.profile_id,
-                      senderDeviceIdNum,
-                      { type: msg.type, body: bodyUint8Array }
-                    );
-
-                    if (plaintextBufferRetry) {
-                      processedContent =
-                        arrayBufferToString(plaintextBufferRetry);
-                      await cacheSentMessage(currentUser.id, {
-                        id: msg.id,
-                        content: processedContent,
-                        conversationId: selectedConversation.id,
-                        timestamp: msg.created_at,
-                      });
-                      console.log(
-                        `[useMessages Recover] Decryption successful for ${addrStr} after retry.`
-                      );
-                    } else {
-                      processedContent =
-                        "[Decryption Failed After Retry - No Buffer]";
+                    if (!sessionResult) {
                       console.warn(
-                        `[useMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
+                        `[useMessages Recover] Failed to rebuild session for ${addrStr}, skipping decryption retry.`
                       );
+                      processedContent = "[Session Recovery Failed]";
+                    } else {
+                      console.log(
+                        `[useMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
+                      );
+
+                      const plaintextBufferRetry = await decryptMessage(
+                        signalStore,
+                        currentUser.id,
+                        deviceId,
+                        msg.profile_id,
+                        senderDeviceIdNum,
+                        { type: msg.type, body: bodyUint8Array }
+                      );
+
+                      if (plaintextBufferRetry) {
+                        processedContent =
+                          arrayBufferToString(plaintextBufferRetry);
+                        await cacheSentMessage(currentUser.id, {
+                          id: msg.id,
+                          content: processedContent,
+                          conversationId: selectedConversation.id,
+                          timestamp: msg.created_at,
+                        });
+                        console.log(
+                          `[useMessages Recover] Decryption successful for ${addrStr} after retry.`
+                        );
+                      } else {
+                        processedContent =
+                          "[Decryption Failed After Retry - No Buffer]";
+                        console.warn(
+                          `[useMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
+                        );
+                      }
                     }
                   } catch (recoveryError) {
                     console.error(
@@ -372,14 +530,42 @@ export function useMessages(
 
           decryptedMessages.push({
             id: msg.id,
-            senderId: senderProfile?.id || msg.profile_id,
-            senderName:
-              senderProfile?.full_name ||
-              senderProfile?.username ||
-              (isSelfSent ? "Me" : "Unknown User"),
-            senderAvatar: senderProfile?.avatar_url,
+            senderId: isSelfSent
+              ? currentUser.id
+              : msg.profiles?.id || msg.profile_id,
+            senderName: isSelfSent
+              ? "Me"
+              : msg.profiles?.full_name ||
+                msg.profiles?.username ||
+                "Unknown User",
+            senderAvatar: isSelfSent
+              ? profile?.avatar_url
+              : msg.profiles?.avatar_url,
             content: processedContent,
-            timestamp,
+            timestamp: (() => {
+              // For database messages, use created_at
+              if (dbMessage?.created_at) {
+                return new Date(dbMessage.created_at).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+              }
+              // For cached-only messages, use cached timestamp
+              if (cachedMessage?.timestamp) {
+                return new Date(cachedMessage.timestamp).toLocaleTimeString(
+                  [],
+                  {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }
+                );
+              }
+              // Fallback
+              return new Date().toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+            })(),
             isSelf: isSelfSent,
           });
         }
@@ -395,6 +581,31 @@ export function useMessages(
 
     fetchMessagesAndEnsureSession();
   }, [selectedConversation?.id, currentUser?.id, isReady, deviceId]);
+
+  // Force re-run by adding a render counter for debugging
+  const [renderCount, setRenderCount] = useState(0);
+  useEffect(() => {
+    setRenderCount((prev) => prev + 1);
+  }, [selectedConversation?.id, currentUser?.id, isReady, deviceId]);
+
+  // Debug the dependency values to see why useEffect isn't running
+  useEffect(() => {
+    console.log("[useMessages] Dependencies changed:", {
+      conversationId: selectedConversation?.id,
+      userId: currentUser?.id,
+      isReady,
+      deviceId,
+      conversationStatus: selectedConversation?.my_status,
+      renderCount,
+    });
+  }, [
+    selectedConversation?.id,
+    currentUser?.id,
+    isReady,
+    deviceId,
+    selectedConversation?.my_status,
+    renderCount,
+  ]);
 
   useEffect(() => {
     scrollToBottom();
