@@ -16,19 +16,22 @@ export default function HomePage() {
   ];
 
   const [currentPhrase, setCurrentPhrase] = useState(0);
-  const [randomPosition, setRandomPosition] = useState({ top: "50%", left: "50%" });
+  const [randomPosition, setRandomPosition] = useState({
+    top: "50%",
+    left: "50%",
+  });
 
-  useEffect(() => { 
-      const interval = setInterval(() => {
+  useEffect(() => {
+    const interval = setInterval(() => {
       setCurrentPhrase((prev) => (prev + 1) % phrases.length);
-  
-      const top = Math.floor(Math.random() * 30) + 30;  // between 30% and 70%
-      const left = Math.floor(Math.random() * 5) + 50; // between 60% and 75%           
+
+      const top = Math.floor(Math.random() * 30) + 30; // between 30% and 70%
+      const left = Math.floor(Math.random() * 5) + 50; // between 60% and 75%
       setRandomPosition({ top: `${top}%`, left: `${left}%` });
     }, 5000); // 5 seconds
-  
+
     return () => clearInterval(interval);
-  }, []);  
+  }, []);
 
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-b from-slate-900 to-slate-800">
@@ -40,9 +43,8 @@ export default function HomePage() {
         </div>
       </header>
 
-       {/* Main Section */}
+      {/* Main Section */}
       <main className="flex-1 container mx-auto px-4 py-12 flex flex-col md:flex-row items-center justify-center text-center gap-8">
-
         {/* Left Side Content */}
         <div className="hidden 2xl:flex flex-1">
           <div className="flex flex-col">
@@ -58,7 +60,6 @@ export default function HomePage() {
             />
           </div>
         </div>
-
 
         {/* Center Content */}
         <motion.div
@@ -81,7 +82,6 @@ export default function HomePage() {
             </div>
           </div>
 
-          
           <h1 className="text-3xl md:text-5xl font-bold text-white mb-4 tracking-wide">
             Secure. Private. Encrypted.
           </h1>
@@ -90,7 +90,7 @@ export default function HomePage() {
             End-to-end encrypted messaging that keeps your conversations private
             and secure.
           </p>
-          
+
           <div className="grid gap-4 mb-8">
             <motion.div
               initial={{ opacity: 0, x: -20 }}
@@ -128,22 +128,20 @@ export default function HomePage() {
               </span>
             </motion.div>
           </div>
-            
+
           <div className="flex flex-col sm:flex-row gap-5">
             <Link to="/login" className="w-full">
-              <Button className="w-full bg-emerald-500 hover:bg-emerald-600 text-white">  
+              <Button className="w-full bg-emerald-500 hover:bg-emerald-600 text-white">
                 Login
               </Button>
-            </Link>  
+            </Link>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-22 mt-4">
             <span className="text-slate-200 text-sm">
-                Don't have an account?
+              Don't have an account?
             </span>
-            <span className="text-slate-200 text-sm">
-                Want to learn more?
-            </span>
+            <span className="text-slate-200 text-sm">Want to learn more?</span>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-4 mt-1">
@@ -161,33 +159,46 @@ export default function HomePage() {
               </Button>
             </Link>
           </div>
-        </motion.div>
-      
 
-          {/* Right Side */}
-          <div className="hidden 2xl:flex flex-1 relative overflow-hidden min-h-[500px]">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={currentPhrase}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.6 }}
-                style={{
-                  position: "absolute",
-                  top: randomPosition.top,
-                  left: randomPosition.left,
-                  transform: "translate(-50%, -50%)",
-                  maxWidth: "250px",
-                }}
-                className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 text-slate-200 text-center italic text-xl leading-relaxed"
+          {/* Developer/Test Link */}
+          <div className="mt-6 pt-4 border-t border-slate-700">
+            <Link to="/crypto-test" className="w-full">
+              <Button
+                variant="outline"
+                className="w-full border-emerald-600 text-emerald-400 hover:bg-emerald-900/20 text-sm"
               >
-                “{phrases[currentPhrase]}”
-              </motion.div>
-            </AnimatePresence>
+                🔒 Security Validation Test Page
+              </Button>
+            </Link>
+            <p className="text-xs text-slate-400 mt-1">
+              Test Forward Secrecy & Post-Compromise Security
+            </p>
           </div>
+        </motion.div>
 
-        </main>
+        {/* Right Side */}
+        <div className="hidden 2xl:flex flex-1 relative overflow-hidden min-h-[500px]">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentPhrase}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.6 }}
+              style={{
+                position: "absolute",
+                top: randomPosition.top,
+                left: randomPosition.left,
+                transform: "translate(-50%, -50%)",
+                maxWidth: "250px",
+              }}
+              className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 text-slate-200 text-center italic text-xl leading-relaxed"
+            >
+              “{phrases[currentPhrase]}”
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </main>
 
       {/* Footer */}
       <footer className="container mx-auto p-4 text-center text-slate-400 text-sm">
@@ -195,4 +206,4 @@ export default function HomePage() {
       </footer>
     </div>
   );
-} 
+}
