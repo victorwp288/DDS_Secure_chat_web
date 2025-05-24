@@ -180,6 +180,18 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", message: "Local API server running" });
 });
 
+// SPA fallback - redirect frontend routes to Vite dev server
+app.get("*", (req, res) => {
+  // Skip if it's an API route (already handled above)
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: "API route not found" });
+  }
+
+  // For all other routes, redirect to Vite dev server
+  const viteUrl = `http://localhost:5173${req.path}`;
+  res.redirect(302, viteUrl);
+});
+
 const PORT = process.env.API_PORT || 3001;
 
 app.listen(PORT, () => {
