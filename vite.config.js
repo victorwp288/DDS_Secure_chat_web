@@ -44,7 +44,7 @@ export default defineConfig({
       ],
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-        navigateFallback: null, // Disable navigate fallback for SPA
+        navigateFallback: "index.html", // Enable navigate fallback for SPA routing
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
