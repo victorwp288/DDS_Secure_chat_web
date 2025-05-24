@@ -91,43 +91,33 @@ export default function HomePage() {
             and secure.
           </p>
 
-          <div className="grid gap-4 mb-8">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.2, duration: 0.5 }}
-              className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
-            >
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2, duration: 0.8 }}
+            className="grid gap-4 mb-8"
+          >
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
               <Shield className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 End-to-end encryption for all messages
               </span>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.3, duration: 0.5 }}
-              className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
-            >
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
               <Zap className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 Fast, reliable messaging on any device
               </span>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.4, duration: 0.5 }}
-              className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
-            >
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
               <MessageSquare className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 Group chats with the same level of security
               </span>
-            </motion.div>
-          </div>
+            </div>
+          </motion.div>
 
           <div className="flex flex-col sm:flex-row gap-5">
             <Link to="/login" className="w-full">
