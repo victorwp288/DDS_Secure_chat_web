@@ -5,7 +5,39 @@
       "destination": "/api/$1"
     },
     {
-      "source": "/((?!api/|_next/|favicon\\.ico|.*\\.).*)",
+      "source": "/login",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/signup",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/chat",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/chat/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/settings",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/profile",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/about",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/forgot-password",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/crypto-test",
       "destination": "/index.html"
     }
   ],
