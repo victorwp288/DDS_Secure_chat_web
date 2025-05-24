@@ -41,7 +41,9 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* Mobile viewport height fix */
 :root {
+  --vh: 1vh;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -74,6 +76,21 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --vh: 1dvh;
+  }
+}
+
+/* Add custom utility classes for dynamic viewport height */
+.h-screen-mobile {
+  height: calc(var(--vh, 1vh) * 100);
+}
+
+.min-h-screen-mobile {
+  min-height: calc(var(--vh, 1vh) * 100);
 }
 
 .dark {

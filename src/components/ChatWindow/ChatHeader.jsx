@@ -102,7 +102,7 @@ export function ChatHeader({
   };
 
   return (
-    <div className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800">
+    <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800">
       <div className="flex items-center gap-3">
         {isMobile && (
           <Button

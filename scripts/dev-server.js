@@ -180,6 +180,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", message: "Local API server running" });
 });
 
+//eslint-disable-next-line
 const PORT = process.env.API_PORT || 3001;
 
 app.listen(PORT, () => {

@@ -74,7 +74,7 @@ export function MessageList({
   };
 
   return (
-    <ScrollArea className="flex-1 p-4 bg-gradient-to-b from-slate-900 to-slate-800 min-h-0">
+    <ScrollArea className="flex-1 min-h-0 p-4 bg-gradient-to-b from-slate-900 to-slate-800">
       <div className="space-y-4">
         {loading && (
           <div className="text-center text-slate-400 py-4">

@@ -118,7 +118,7 @@ export function MessageInput({
   };
 
   return (
-    <div className="p-4 border-t border-slate-700 bg-slate-800 relative">
+    <div className="flex-shrink-0 p-4 border-t border-slate-700 bg-slate-800 relative">
       <form onSubmit={handleSubmit} className="flex items-center gap-2">
         <Button
           type="button"

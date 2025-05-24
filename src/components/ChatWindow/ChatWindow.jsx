@@ -33,7 +33,7 @@ export function ChatWindow({
         selectedConversation.peer_status === "pending"));
 
   return (
-    <div className="flex-1 flex flex-col h-full">
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
       <ChatHeader
         isMobile={isMobile}
         onMobileMenuToggle={onMobileMenuToggle}

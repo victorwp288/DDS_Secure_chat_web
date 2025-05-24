@@ -446,7 +446,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-900">
+    <div className="flex h-screen-mobile bg-slate-900">
       {/* Sidebar */}
       {(!isMobile || isMobileMenuOpen) && (
         <ChatSidebar

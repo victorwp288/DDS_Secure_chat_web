@@ -41,8 +41,8 @@ export function ChatSidebar({
     <AnimatePresence>
       <div
         className={`${
-          isMobile ? "absolute z-10 w-full max-w-xs" : "w-80"
-        } h-full bg-slate-800 border-r border-slate-700 flex flex-col overflow-hidden`}
+          isMobile ? "absolute z-10 w-full max-w-xs h-full" : "w-80 h-full"
+        } bg-slate-800 border-r border-slate-700 flex flex-col overflow-hidden`}
       >
         {/* Header */}
         <div className="p-4 border-b border-slate-700 flex items-center justify-between">
