@@ -93,8 +93,8 @@ export default function HomePage() {
 
           <div className="grid gap-4 mb-8">
             <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ delay: 0.2, duration: 0.5 }}
               className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
             >
@@ -105,8 +105,8 @@ export default function HomePage() {
             </motion.div>
 
             <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ delay: 0.3, duration: 0.5 }}
               className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
             >
@@ -117,8 +117,8 @@ export default function HomePage() {
             </motion.div>
 
             <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ delay: 0.4, duration: 0.5 }}
               className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition"
             >
