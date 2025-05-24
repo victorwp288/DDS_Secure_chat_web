@@ -5,7 +5,10 @@ import {
   buf2hex,
   bundlesToMap,
 } from "../lib/signalUtils";
-import { SignalProtocolAddress } from "@privacyresearch/libsignal-protocol-typescript";
+import {
+  SignalProtocolAddress,
+  SessionBuilder,
+} from "@privacyresearch/libsignal-protocol-typescript";
 import { get } from "../lib/backend";
 import { cacheSentMessage } from "../lib/db";
 import { uploadEncryptedFile } from "../lib/fileUpload";
@@ -13,9 +16,7 @@ import { uploadEncryptedFile } from "../lib/fileUpload";
 async function safeProcessPreKey(store, userId, deviceId, bundle) {
   const addr = new SignalProtocolAddress(userId, deviceId);
   const addrStr = addr.toString();
-  const builder = new (
-    await import("@privacyresearch/libsignal-protocol-typescript")
-  ).SessionBuilder(store, addr);
+  const builder = new SessionBuilder(store, addr);
 
   let trusted = false;
   try {

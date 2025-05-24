@@ -2,6 +2,31 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
+
+// Helper to unregister stale service workers (temporary fix for cached broken bundles)
+if ("serviceWorker" in navigator) {
+  // Check if we need to clear old cached versions
+  const isOldCache = localStorage.getItem("sw-cleared") !== "v2";
+  if (isOldCache) {
+    navigator.serviceWorker
+      .getRegistrations()
+      .then((registrations) => {
+        registrations.forEach((registration) => {
+          console.log(
+            "[PWA] Unregistering old service worker:",
+            registration.scope
+          );
+          registration.unregister();
+        });
+        localStorage.setItem("sw-cleared", "v2");
+        console.log("[PWA] Old service workers cleared");
+      })
+      .catch((err) =>
+        console.error("[PWA] Error clearing old service workers:", err)
+      );
+  }
+}
 
 // PWA Service Worker Registration
 if ("serviceWorker" in navigator) {
@@ -37,6 +62,8 @@ if ("serviceWorker" in navigator) {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>
 );

@@ -1,0 +1,11 @@
+# Browsers that we support
+> 0.5%
+last 2 versions
+not dead
+
+# Specifically target iOS Safari versions for better compatibility
+last 2 iOS versions
+iOS >= 12
+
+# Ensure modern syntax gets transpiled for older Safari
+Safari >= 12 

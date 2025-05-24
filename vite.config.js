@@ -4,6 +4,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 import { fileURLToPath } from "url";
+// Polyfill imports for Node core modules compatibility
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 // Get the directory name in an ES module context
 const __filename = fileURLToPath(import.meta.url);
@@ -14,8 +16,27 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // Add Node.js polyfills for browser compatibility
+    nodePolyfills({
+      // Whether to polyfill `node:` protocol imports.
+      protocolImports: true,
+      // Whether to polyfill specific globals.
+      globals: {
+        Buffer: true,
+        global: true,
+        process: true,
+      },
+      // Whether to polyfill the `util` module.
+      util: true,
+      // Optional: To reduce bundle size, you could specify only needed polyfills:
+      // include: ['crypto', 'buffer', 'events', 'stream', 'util', 'path'],
+    }),
     VitePWA({
       registerType: "autoUpdate",
+      // Disable PWA in non-production builds to prevent stale cache issues
+      devOptions: {
+        enabled: false,
+      },
       includeAssets: [
         "favicon.ico",
         "apple-touch-icon-180x180.png",
@@ -100,9 +121,6 @@ export default defineConfig({
           },
         ],
       },
-      devOptions: {
-        enabled: true,
-      },
     }),
   ],
   server: {
@@ -126,8 +144,21 @@ export default defineConfig({
     css: true,
   },
   build: {
+    // Target ES2018 for better Safari compatibility (supports Safari 12+)
+    target: "es2018",
     chunkSizeWarningLimit: 2000, // Increase warning limit for large chunks
     rollupOptions: {
+      onwarn(warning, warn) {
+        // Suppress eval warnings from protobufjs
+        if (
+          warning.code === "EVAL" &&
+          warning.id?.includes("@protobufjs/inquire")
+        ) {
+          return;
+        }
+        // Show all other warnings
+        warn(warning);
+      },
       output: {
         manualChunks: {
           vendor: ["react", "react-dom"],

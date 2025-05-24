@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Lock, MessageSquare, Shield, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useState } from "react";
 
 export default function HomePage() {
@@ -34,17 +35,27 @@ export default function HomePage() {
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-b from-slate-900 to-slate-800">
       {/* Header */}
-      <header className="container mx-auto p-4 flex justify-between items-center">
+      <motion.header
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+        className="container mx-auto p-4 flex justify-between items-center"
+      >
         <div className="flex items-center gap-2">
           <Lock className="h-8 w-8 text-emerald-500" />
           <span className="font-bold text-white text-2xl">SecureChat</span>
         </div>
-      </header>
+      </motion.header>
 
       {/* Main Section */}
       <main className="flex-1 container mx-auto px-4 py-12 flex flex-col md:flex-row items-center justify-center text-center gap-8">
         {/* Left Side Content */}
-        <div className="hidden 2xl:flex flex-1">
+        <motion.div
+          initial={{ opacity: 0, x: -30 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.8, delay: 0.2 }}
+          className="hidden 2xl:flex flex-1"
+        >
           <div className="flex flex-col">
             <img
               src="/images/green_text.png"
@@ -57,29 +68,54 @@ export default function HomePage() {
               className="w-60 ml-30"
             />
           </div>
-        </div>
+        </motion.div>
 
         {/* Center Content */}
-        <div className="flex-1 max-w-md">
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.1 }}
+          className="flex-1 max-w-md"
+        >
           <div className="mb-6 flex justify-center">
             <div className="relative drop-shadow-lg">
               <Lock className="h-20 w-20 text-emerald-500" />
-              <div className="absolute -top-1 -right-1 bg-blue-400 rounded-full p-1 shadow-md">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.5 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.5, delay: 0.4 }}
+                className="absolute -top-1 -right-1 bg-blue-400 rounded-full p-1 shadow-md"
+              >
                 <Shield className="h-6 w-6 text-slate-900" />
-              </div>
+              </motion.div>
             </div>
           </div>
 
-          <h1 className="text-3xl md:text-5xl font-bold text-white mb-4 tracking-wide">
+          <motion.h1
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.3 }}
+            className="text-3xl md:text-5xl font-bold text-white mb-4 tracking-wide"
+          >
             Secure. Private. Encrypted.
-          </h1>
+          </motion.h1>
 
-          <p className="text-slate-300 mb-8">
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.4 }}
+            className="text-slate-300 mb-8"
+          >
             End-to-end encrypted messaging that keeps your conversations private
             and secure.
-          </p>
+          </motion.p>
 
-          <div className="grid gap-4 mb-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.5 }}
+            className="grid gap-4 mb-8"
+          >
             <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <Shield className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm flex-1">
@@ -100,24 +136,39 @@ export default function HomePage() {
                 Group chats with the same level of security
               </span>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="flex flex-col sm:flex-row gap-5">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.6 }}
+            className="flex flex-col sm:flex-row gap-5"
+          >
             <Link to="/login" className="w-full">
               <Button className="w-full bg-emerald-500 hover:bg-emerald-600 text-white">
                 Login
               </Button>
             </Link>
-          </div>
+          </motion.div>
 
-          <div className="flex flex-col sm:flex-row gap-22 mt-4">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.7 }}
+            className="flex flex-col sm:flex-row gap-22 mt-4"
+          >
             <span className="text-slate-200 text-sm">
               Don't have an account?
             </span>
             <span className="text-slate-200 text-sm">Want to learn more?</span>
-          </div>
+          </motion.div>
 
-          <div className="flex flex-col sm:flex-row gap-4 mt-1">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.8 }}
+            className="flex flex-col sm:flex-row gap-4 mt-1"
+          >
             <Link to="/signup" className="w-full">
               <Button className="w-full bg-blue-400 hover:bg-blue-600 text-white">
                 Get Started <ArrowRight className="ml-2 h-4 w-4" />
@@ -131,10 +182,15 @@ export default function HomePage() {
                 Learn More
               </Button>
             </Link>
-          </div>
+          </motion.div>
 
           {/* Developer/Test Link */}
-          <div className="mt-6 pt-4 border-t border-slate-700">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.9 }}
+            className="mt-6 pt-4 border-t border-slate-700"
+          >
             <Link to="/crypto-test" className="w-full">
               <Button
                 variant="outline"
@@ -146,30 +202,47 @@ export default function HomePage() {
             <p className="text-xs text-slate-400 mt-1">
               Test Forward Secrecy & Post-Compromise Security
             </p>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
 
         {/* Right Side */}
-        <div className="hidden 2xl:flex flex-1 relative overflow-hidden min-h-[500px]">
-          <div
-            style={{
-              position: "absolute",
-              top: randomPosition.top,
-              left: randomPosition.left,
-              transform: "translate(-50%, -50%)",
-              maxWidth: "250px",
-            }}
-            className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 text-slate-200 text-center italic text-xl leading-relaxed"
-          >
-            "{phrases[currentPhrase]}"
-          </div>
-        </div>
+        <motion.div
+          initial={{ opacity: 0, x: 30 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.8, delay: 0.3 }}
+          className="hidden 2xl:flex flex-1 relative overflow-hidden min-h-[500px]"
+        >
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentPhrase}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.5, ease: "easeInOut" }}
+              style={{
+                position: "absolute",
+                top: randomPosition.top,
+                left: randomPosition.left,
+                transform: "translate(-50%, -50%)",
+                maxWidth: "250px",
+              }}
+              className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 text-slate-200 text-center italic text-xl leading-relaxed"
+            >
+              "{phrases[currentPhrase]}"
+            </motion.div>
+          </AnimatePresence>
+        </motion.div>
       </main>
 
       {/* Footer */}
-      <footer className="container mx-auto p-4 text-center text-slate-400 text-sm">
+      <motion.footer
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.8, delay: 1.0 }}
+        className="container mx-auto p-4 text-center text-slate-400 text-sm"
+      >
         <p>© {new Date().getFullYear()} SecureChat. All rights reserved.</p>
-      </footer>
+      </motion.footer>
     </div>
   );
 }
