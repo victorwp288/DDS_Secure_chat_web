@@ -92,28 +92,33 @@ export default function HomePage() {
           </p>
 
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2, duration: 0.8 }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.2, duration: 0.6, ease: "easeOut" }}
             className="grid gap-4 mb-8"
+            style={{
+              willChange: "transform, opacity",
+              backfaceVisibility: "hidden",
+              transform: "translateZ(0)",
+            }}
           >
             <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <Shield className="h-5 w-5 text-emerald-400 flex-shrink-0" />
-              <span className="text-slate-200 text-sm">
+              <span className="text-slate-200 text-sm flex-1">
                 End-to-end encryption for all messages
               </span>
             </div>
 
             <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <Zap className="h-5 w-5 text-emerald-400 flex-shrink-0" />
-              <span className="text-slate-200 text-sm">
+              <span className="text-slate-200 text-sm flex-1">
                 Fast, reliable messaging on any device
               </span>
             </div>
 
             <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <MessageSquare className="h-5 w-5 text-emerald-400 flex-shrink-0" />
-              <span className="text-slate-200 text-sm">
+              <span className="text-slate-200 text-sm flex-1">
                 Group chats with the same level of security
               </span>
             </div>
