@@ -97,21 +97,21 @@ export default function HomePage() {
             transition={{ delay: 0.2, duration: 0.8 }}
             className="grid gap-4 mb-8"
           >
-            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <Shield className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 End-to-end encryption for all messages
               </span>
             </div>
 
-            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <Zap className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 Fast, reliable messaging on any device
               </span>
             </div>
 
-            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700 hover:bg-slate-700 transition">
+            <div className="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg text-left border border-slate-700">
               <MessageSquare className="h-5 w-5 text-emerald-400 flex-shrink-0" />
               <span className="text-slate-200 text-sm">
                 Group chats with the same level of security
