@@ -31,43 +31,109 @@ app.use((req, res, next) => {
 // Dynamic API route handler
 async function handleApiRoute(req, res, routePath) {
   try {
+    console.log(`[DEBUG] Handling route: ${routePath}`);
     const apiPath = join(projectRoot, "api", routePath);
+    console.log(`[DEBUG] API path: ${apiPath}`);
 
-    // Check if it's a dynamic route (contains brackets)
-    let actualPath = apiPath;
+    let handlerPath;
     let params = {};
 
-    if (routePath.includes("[") && routePath.includes("]")) {
-      // Handle dynamic routes like [id] or [userId]
-      const parts = routePath.split("/");
-      const actualParts = [];
+    // First, try to find the exact file
+    if (fs.existsSync(apiPath + ".js")) {
+      handlerPath = apiPath + ".js";
+      console.log(`[DEBUG] Found exact file: ${handlerPath}`);
+    } else if (fs.existsSync(join(apiPath, "index.js"))) {
+      handlerPath = join(apiPath, "index.js");
+      console.log(`[DEBUG] Found index file: ${handlerPath}`);
+    } else {
+      console.log(`[DEBUG] No exact file found, looking for dynamic routes`);
+      // If exact file doesn't exist, look for dynamic routes
+      const pathParts = routePath.split("/");
+      console.log(`[DEBUG] Path parts:`, pathParts);
+      const apiDir = join(projectRoot, "api");
 
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        if (part.includes("[") && part.includes("]")) {
-          // This is a dynamic segment
-          const paramName = part.replace("[", "").replace("]", "");
-          const pathSegments = req.path.split("/api/")[1].split("/");
-          params[paramName] = pathSegments[i];
-          actualParts.push(part);
+      // Try to find a matching dynamic route
+      let currentDir = apiDir;
+      let found = false;
+
+      for (let i = 0; i < pathParts.length; i++) {
+        const part = pathParts[i];
+        console.log(`[DEBUG] Processing part ${i}: ${part}`);
+        const directPath = join(currentDir, part);
+
+        if (
+          fs.existsSync(directPath) &&
+          fs.statSync(directPath).isDirectory()
+        ) {
+          // Direct directory exists, continue
+          currentDir = directPath;
+          console.log(`[DEBUG] Found directory: ${currentDir}`);
         } else {
-          actualParts.push(part);
+          // Look for dynamic route in current directory
+          console.log(`[DEBUG] Looking for dynamic routes in: ${currentDir}`);
+          const files = fs.readdirSync(currentDir);
+          console.log(`[DEBUG] Files in directory:`, files);
+          let foundDynamic = false;
+
+          for (const file of files) {
+            if (file.includes("[") && file.includes("]")) {
+              console.log(`[DEBUG] Found dynamic file: ${file}`);
+              const paramName = file
+                .replace("[", "")
+                .replace("]", "")
+                .replace(".js", "");
+              params[paramName] = part;
+              console.log(`[DEBUG] Setting param ${paramName} = ${part}`);
+
+              if (i === pathParts.length - 1) {
+                // This is the last part, should be a .js file
+                const dynamicFile = join(currentDir, file);
+                if (fs.existsSync(dynamicFile)) {
+                  handlerPath = dynamicFile;
+                  found = true;
+                  console.log(`[DEBUG] Found handler file: ${handlerPath}`);
+                  break;
+                }
+              } else {
+                // This is a directory, continue
+                const dynamicDir = join(currentDir, file);
+                if (
+                  fs.existsSync(dynamicDir) &&
+                  fs.statSync(dynamicDir).isDirectory()
+                ) {
+                  currentDir = dynamicDir;
+                  foundDynamic = true;
+                  console.log(
+                    `[DEBUG] Moving to dynamic directory: ${currentDir}`
+                  );
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!foundDynamic && !found) {
+            console.log(`[DEBUG] No dynamic route found, breaking`);
+            break;
+          }
         }
       }
 
-      actualPath = join(projectRoot, "api", actualParts.join("/"));
+      if (!found && !handlerPath) {
+        console.log(`[DEBUG] No handler found, returning 404`);
+        res.status(404).json({ error: "API route not found" });
+        return;
+      }
     }
 
-    // Try to find the handler file
-    let handlerPath;
-    if (fs.existsSync(actualPath + ".js")) {
-      handlerPath = actualPath + ".js";
-    } else if (fs.existsSync(join(actualPath, "index.js"))) {
-      handlerPath = join(actualPath, "index.js");
-    } else {
+    if (!handlerPath) {
+      console.log(`[DEBUG] No handler path set, returning 404`);
       res.status(404).json({ error: "API route not found" });
       return;
     }
+
+    console.log(`[DEBUG] Using handler: ${handlerPath}`);
+    console.log(`[DEBUG] Params:`, params);
 
     // Import and execute the handler
     const module = await import(
