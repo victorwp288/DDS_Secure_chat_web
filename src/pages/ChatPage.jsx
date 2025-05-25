@@ -7,7 +7,10 @@ import { useConversations } from "../hooks/useConversations";
 import { useMessages } from "../hooks/useMessages";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useRealtimeSubscriptions } from "../hooks/useRealtimeSubscriptions";
+import { useDeviceChangeNotifications } from "../hooks/useDeviceChangeNotifications";
 import { useAllUsers } from "../hooks/useAllUsers";
+import { usePresence } from "../hooks/usePresence";
+import { useUserPresence } from "../hooks/useUserPresence";
 import { ChatSidebar } from "../components/ChatSidebar/ChatSidebar";
 import { ChatWindow } from "../components/ChatWindow/ChatWindow";
 
@@ -65,6 +68,23 @@ export default function ChatPage() {
   } = useSendMessage(sig, currentUser, profile);
 
   const { allUsers } = useAllUsers(currentUser?.id);
+
+  // Set up presence tracking for current user
+  usePresence(currentUser, deviceId);
+
+  // Get list of user IDs to track presence for
+  const userIdsToTrack = conversations.flatMap(
+    (conv) =>
+      conv.participants
+        ?.map((p) => p.id)
+        .filter((id) => id !== currentUser?.id) || []
+  );
+
+  // Track presence of other users
+  const { getUserPresence, isUserOnline } = useUserPresence(userIdsToTrack);
+
+  // Set up device change notifications
+  useDeviceChangeNotifications(currentUser, sig);
 
   // Memoize callback functions to prevent unnecessary re-renders
   const handleNewMessage = useCallback(
@@ -467,6 +487,8 @@ export default function ChatPage() {
           onUserSelect={handleUserSelect}
           onCreateGroup={handleCreateGroup}
           onLogout={handleLogout}
+          getUserPresence={getUserPresence}
+          isUserOnline={isUserOnline}
         />
       )}
 
@@ -491,6 +513,9 @@ export default function ChatPage() {
         isReady={isReady}
         sendLoading={false}
         sendingStatus={sendingStatus}
+        profile={profile}
+        getUserPresence={getUserPresence}
+        isUserOnline={isUserOnline}
       />
     </div>
   );

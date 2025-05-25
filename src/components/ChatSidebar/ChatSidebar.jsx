@@ -33,6 +33,8 @@ export function ChatSidebar({
   onUserSelect,
   onCreateGroup,
   onLogout,
+  getUserPresence,
+  isUserOnline,
 }) {
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
   const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
@@ -124,6 +126,9 @@ export function ChatSidebar({
           onAcceptConversation={onAcceptConversation}
           onRejectConversation={onRejectConversation}
           onMobileMenuClose={isMobile ? onMobileMenuClose : undefined}
+          getUserPresence={getUserPresence}
+          isUserOnline={isUserOnline}
+          currentUserId={currentUser?.id}
         />
 
         {/* Footer Profile Section */}
@@ -148,7 +153,7 @@ export function ChatSidebar({
                 {profile?.full_name || profile?.username || "Loading..."}
               </p>
               <p className="text-xs text-slate-400">
-                {profile?.status || "Offline"}
+                {profile?.status === "online" ? "Online" : "Offline"}
               </p>
             </div>
           </Link>

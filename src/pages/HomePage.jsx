@@ -158,9 +158,12 @@ export default function HomePage() {
             transition={{ duration: 0.8, delay: 0.7 }}
             className="flex flex-col sm:flex-row gap-22 mt-4"
           >
-            <span className="text-slate-200 text-sm">
+            <Link
+              to="/signup"
+              className="text-slate-200 text-sm hover:text-emerald-400 transition-colors"
+            >
               Don't have an account?
-            </span>
+            </Link>
             <span className="text-slate-200 text-sm">Want to learn more?</span>
           </motion.div>
 

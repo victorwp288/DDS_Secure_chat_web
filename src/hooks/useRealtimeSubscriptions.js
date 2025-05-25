@@ -163,8 +163,149 @@ export function useRealtimeSubscriptions({
           return;
         }
 
-        console.error("[Realtime HNM] Decryption error (other):", e);
-        return;
+        // Handle "No record for device" and "Bad MAC" errors by building session and retrying
+        if (
+          e.message?.includes("No record for device") ||
+          e.message?.includes("Bad MAC")
+        ) {
+          const errorType = e.message?.includes("No record for device")
+            ? "No record for device"
+            : "Bad MAC";
+          console.warn(
+            `[Realtime HNM] 🔧 ${errorType} for ${senderAddressString} (msg ID: ${newMessageData.id}), attempting session build and retry...`
+          );
+          try {
+            // Import required modules for session building
+            const { get } = await import("../lib/backend");
+            const { bundlesToMap } = await import("../lib/signalUtils");
+            const { SessionBuilder } = await import(
+              "@privacyresearch/libsignal-protocol-typescript"
+            );
+
+            // Remove any existing session
+            await currentSignalStore.removeSession(senderAddressString);
+            console.log(
+              `[Realtime HNM] ✅ Removed session for ${senderAddressString}.`
+            );
+
+            // Fetch bundles for the sender
+            console.log(
+              `[Realtime HNM] 📡 Fetching bundles for peer ${newMessageData.profile_id}...`
+            );
+            const peerBundlesData = await get(
+              `/signal/bundles/${newMessageData.profile_id}`
+            );
+            console.log(
+              `[Realtime HNM] 📦 Received ${
+                peerBundlesData?.length || 0
+              } bundles for peer ${newMessageData.profile_id}`
+            );
+
+            if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
+              throw new Error(
+                `[Realtime HNM] No valid bundles array found for peer ${newMessageData.profile_id}.`
+              );
+            }
+
+            const bundleMap = bundlesToMap(peerBundlesData);
+            console.log(
+              `[Realtime HNM] 🗺️ Bundle map created with ${
+                bundleMap.size
+              } devices: [${Array.from(bundleMap.keys()).join(", ")}]`
+            );
+
+            const bundleForDevice = bundleMap.get(
+              newMessageData.device_id || 1
+            );
+            if (!bundleForDevice) {
+              throw new Error(
+                `[Realtime HNM] Bundle not found for ${senderAddressString} (Device ID: ${
+                  newMessageData.device_id || 1
+                }) after fetching. Available devices: [${Array.from(
+                  bundleMap.keys()
+                ).join(", ")}]`
+              );
+            }
+
+            console.log(
+              `[Realtime HNM] ✅ Found bundle for ${senderAddressString}.`
+            );
+
+            // Also clear any identity key to force fresh trust establishment
+            if (typeof currentSignalStore.removeIdentity === "function") {
+              await currentSignalStore.removeIdentity(senderAddressString);
+              console.log(
+                `[Realtime HNM] 🗑️ Cleared identity for ${senderAddressString}.`
+              );
+            }
+
+            // Save the new identity from the bundle
+            await currentSignalStore.saveIdentity(
+              senderAddressString,
+              bundleForDevice.identityKey
+            );
+            console.log(
+              `[Realtime HNM] 💾 Saved fresh identity for ${senderAddressString}.`
+            );
+
+            // Build session
+            const builder = new SessionBuilder(
+              currentSignalStore,
+              senderAddress
+            );
+            console.log(
+              `[Realtime HNM] 🔨 Building session for ${senderAddressString}...`
+            );
+            await builder.processPreKey(bundleForDevice);
+            console.log(
+              `[Realtime HNM] ✅ Session built for ${senderAddressString}.`
+            );
+
+            // Verify session was created
+            const sessionExists = await currentSignalStore.loadSession(
+              senderAddressString
+            );
+            console.log(
+              `[Realtime HNM] 🔍 Session verification for ${senderAddressString}: ${
+                sessionExists ? "EXISTS" : "NOT FOUND"
+              }`
+            );
+
+            // Retry decryption
+            console.log(
+              `[Realtime HNM] 🔓 Retrying decryption for ${senderAddressString}...`
+            );
+            plaintextBuffer = await decryptMessage(
+              currentSignalStore,
+              currentUserId,
+              myCurrentDeviceIdFromContext,
+              newMessageData.profile_id,
+              newMessageData.device_id || 1,
+              ciphertextForDecryption
+            );
+
+            console.log(
+              `[Realtime HNM] 🎉 Decryption successful for ${senderAddressString} after session build!`
+            );
+          } catch (recoveryError) {
+            console.error(
+              `[Realtime HNM] ❌ Error during session recovery for ${senderAddressString}: ${recoveryError.message}`,
+              recoveryError
+            );
+
+            // If recovery still fails with Bad MAC, this message might be permanently corrupted
+            // Log the issue and skip this message
+            if (recoveryError.message?.includes("Bad MAC")) {
+              console.warn(
+                `[Realtime HNM] 🚫 Message from ${senderAddressString} appears to be permanently corrupted (Bad MAC after session rebuild). This can happen when the sender's session was stale during encryption. Skipping message.`
+              );
+            }
+            return;
+          }
+        } else {
+          console.error("[Realtime HNM] Decryption error (other):", e);
+          return;
+        }
       }
 
       if (!plaintextBuffer) {

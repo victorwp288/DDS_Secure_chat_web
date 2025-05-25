@@ -8,6 +8,9 @@ export function ConversationList({
   onAcceptConversation,
   onRejectConversation,
   onMobileMenuClose,
+  getUserPresence,
+  isUserOnline,
+  currentUserId,
 }) {
   const filteredConversations = conversations.filter(
     (conv) => conv.my_status !== "rejected"
@@ -27,6 +30,9 @@ export function ConversationList({
             }}
             onAccept={onAcceptConversation}
             onReject={onRejectConversation}
+            getUserPresence={getUserPresence}
+            isUserOnline={isUserOnline}
+            currentUserId={currentUserId}
           />
         ))}
       </div>

@@ -1,7 +1,7 @@
 // api/device/register.js
 import { Buffer } from "buffer";
 import { supabaseAdmin } from "../_supabase.js";
-import { cors } from "../../lib/cors.js";
+import { corsHandler } from "../../lib/cors.js";
 
 // --- NEW Robust publicKey extraction function (and helper) --- START ---
 function bytesObjectToB64(obj) {
@@ -58,7 +58,11 @@ function extractPublicKeyB64(k) {
 }
 // --- NEW Robust publicKey extraction function (and helper) --- END ---
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end();
@@ -90,10 +94,11 @@ export default cors(async function handler(req, res) {
       // id: k.id ?? k.keyId,                // accept either name (OLD)
       // publicKey: extractPublicKeyB64(k),  // may be undefined if not parseable (OLD)
       id: k.id ?? k.keyId ?? k.preKeyId ?? idx, // accept preKeyId or fall back to index
-      // Try extractor first, then specific field
+      // Try specific field first, then extractor
       publicKey:
-        extractPublicKeyB64(k) ||
-        (typeof k.preKeyPublicKey === "string" ? k.preKeyPublicKey : undefined),
+        (typeof k.preKeyPublicKey === "string"
+          ? k.preKeyPublicKey
+          : undefined) || extractPublicKeyB64(k),
     }))
     // drop any that we still couldn't parse or have invalid id
     .filter((k) => typeof k.id === "number" && k.publicKey);
@@ -127,6 +132,8 @@ export default cors(async function handler(req, res) {
     let theDeviceId = clientProvidedDeviceId
       ? Number(clientProvidedDeviceId)
       : null;
+    let isNewDevice = false; // Track if we created a new device
+
     console.log(
       `[Register API] Received clientProvidedDeviceId: ${clientProvidedDeviceId}, Parsed as: ${theDeviceId}`
     );
@@ -167,8 +174,13 @@ export default cors(async function handler(req, res) {
 
     if (!theDeviceId) {
       console.log(
-        `[Register API] No valid deviceId to reuse. Inserting new device row for user ${userId}...`
+        `[Register API] No valid deviceId to reuse. Creating new device for user ${userId}...`
       );
+
+      // Instead of deleting all old devices, just create a new one
+      // This prevents breaking existing sessions in group chats
+      // Old devices will naturally become inactive over time
+
       const { data, error: insertError } = await supabaseAdmin
         .from("devices")
         .insert({ user_id: userId })
@@ -183,6 +195,7 @@ export default cors(async function handler(req, res) {
         throw insertError || new Error("Device insert failed");
       }
       theDeviceId = data.device_id;
+      isNewDevice = true; // Mark that we created a new device
       console.log(
         `[Register API] New device inserted. Using deviceId: ${theDeviceId}`
       );
@@ -246,6 +259,38 @@ export default cors(async function handler(req, res) {
     );
     // --- Upsert Bundle (WITH Selected PreKey) --- END ---
 
+    // --- Notify other participants about device change --- START ---
+    // Only notify when a completely new device is created (not when reusing existing device)
+    if (isNewDevice) {
+      try {
+        console.log(
+          `[Register API] Notifying participants about new device ${theDeviceId} for user ${userId}...`
+        );
+
+        const { notifyParticipantsOfDeviceChange } = await import(
+          "./notify-participants.js"
+        );
+        const notifyResult = await notifyParticipantsOfDeviceChange(
+          userId,
+          theDeviceId
+        );
+
+        console.log(
+          `[Register API] Device change notification sent: ${notifyResult.notificationsSent} notifications`
+        );
+      } catch (notifyError) {
+        console.warn(
+          `[Register API] Error sending device change notification: ${notifyError.message}`
+        );
+        // Don't fail the registration if notification fails
+      }
+    } else {
+      console.log(
+        `[Register API] Reusing existing device ${theDeviceId}, no notification needed`
+      );
+    }
+    // --- Notify other participants about device change --- END ---
+
     // Return the deviceId that was used/created
     return res.status(200).json({ deviceId: theDeviceId });
   } catch (err) {
@@ -254,4 +299,4 @@ export default cors(async function handler(req, res) {
       .status(500)
       .json({ error: err.message || "Internal Server Error" });
   }
-});
+}

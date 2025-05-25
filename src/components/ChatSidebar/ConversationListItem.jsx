@@ -7,7 +7,45 @@ export function ConversationListItem({
   onClick,
   onAccept,
   onReject,
+  getUserPresence,
+  isUserOnline,
+  currentUserId,
 }) {
+  // Calculate presence status for display
+  const getPresenceStatus = () => {
+    if (!conversation.participants || !getUserPresence) {
+      return null;
+    }
+
+    if (conversation.is_group) {
+      // For groups, count online members (excluding self)
+      const onlineCount = conversation.participants.filter(
+        (p) => p.id !== currentUserId && isUserOnline && isUserOnline(p.id)
+      ).length;
+
+      if (onlineCount > 0) {
+        return `${onlineCount} online`;
+      }
+      return null;
+    } else {
+      // For 1-on-1 chats, show the other person's status
+      const otherParticipant = conversation.participants.find(
+        (p) => p.id !== currentUserId
+      );
+
+      if (
+        otherParticipant &&
+        isUserOnline &&
+        isUserOnline(otherParticipant.id)
+      ) {
+        return "Online";
+      }
+      return null;
+    }
+  };
+
+  const presenceStatus = getPresenceStatus();
+
   return (
     <div
       className={`p-3 rounded-lg cursor-pointer mb-1 hover:bg-slate-700/50 ${
@@ -58,6 +96,9 @@ export function ConversationListItem({
               </span>
             )}
           </div>
+          {presenceStatus && (
+            <p className="text-xs text-emerald-400 mt-1">{presenceStatus}</p>
+          )}
           {conversation.my_status === "pending" && (
             <div className="mt-2 flex gap-2">
               <Button

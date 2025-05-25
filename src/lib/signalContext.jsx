@@ -124,16 +124,102 @@ export function SignalProvider({ children }) {
             localStorage.getItem(localStorageKey);
           if (!existingDeviceIdFromStorage) {
             console.error(
-              "[SignalContext Store Effect] CRITICAL: Keys exist in DB, but no deviceId found in localStorage. Manual intervention might be needed."
+              "[SignalContext Store Effect] CRITICAL: Keys exist in DB, but no deviceId found in localStorage. This might happen after device cleanup. Regenerating keys..."
             );
-            throw new Error(
-              "Inconsistent state: Signal keys found but no deviceId in localStorage."
+            // Clear the existing keys and regenerate
+            await store.clearAllData();
+            console.log(
+              "[SignalContext Store Effect] Cleared existing keys. Regenerating..."
             );
+
+            const newBundle = await initializeSignalProtocol(store, userId);
+            if (!newBundle) {
+              throw new Error(
+                "Failed to regenerate Signal keys after localStorage cleanup"
+              );
+            }
+
+            const response = await post("/device/register", {
+              ...newBundle,
+              userId: userId,
+            });
+
+            if (
+              response?.deviceId === undefined ||
+              response?.deviceId === null
+            ) {
+              throw new Error(
+                "Device registration failed: No deviceId in server response after regeneration."
+              );
+            }
+            finalDeviceId = response.deviceId;
+            localStorage.setItem(localStorageKey, String(finalDeviceId));
+            console.log(
+              `[SignalContext Store Effect] Regenerated and saved new deviceId: ${finalDeviceId}`
+            );
+          } else {
+            finalDeviceId = Number(existingDeviceIdFromStorage); // Ensure it's a number if store expects that
+            console.log(
+              `[SignalContext Store Effect] Using existing deviceId from localStorage: ${finalDeviceId}`
+            );
+
+            // FORCE CLEANUP: Check if this device still exists in the database
+            // This handles cases where the device was cleaned up server-side but localStorage wasn't cleared
+            try {
+              console.log(
+                `[SignalContext Store Effect] Verifying device ${finalDeviceId} still exists...`
+              );
+              const verifyResponse = await post("/device/verify", {
+                userId: userId,
+                deviceId: finalDeviceId,
+              });
+
+              if (!verifyResponse || !verifyResponse.exists) {
+                console.warn(
+                  `[SignalContext Store Effect] Device ${finalDeviceId} no longer exists in database. Force re-registering...`
+                );
+
+                // Clear everything and start fresh
+                await store.clearAllData();
+                localStorage.removeItem(localStorageKey);
+
+                const newBundle = await initializeSignalProtocol(store, userId);
+                if (!newBundle) {
+                  throw new Error(
+                    "Failed to regenerate Signal keys after device verification failure"
+                  );
+                }
+
+                const response = await post("/device/register", {
+                  ...newBundle,
+                  userId: userId,
+                });
+
+                if (
+                  response?.deviceId === undefined ||
+                  response?.deviceId === null
+                ) {
+                  throw new Error(
+                    "Device registration failed: No deviceId in server response after verification failure."
+                  );
+                }
+                finalDeviceId = response.deviceId;
+                localStorage.setItem(localStorageKey, String(finalDeviceId));
+                console.log(
+                  `[SignalContext Store Effect] Force re-registered with new deviceId: ${finalDeviceId}`
+                );
+              } else {
+                console.log(
+                  `[SignalContext Store Effect] Device ${finalDeviceId} verified as existing.`
+                );
+              }
+            } catch (verifyError) {
+              console.warn(
+                `[SignalContext Store Effect] Device verification failed, continuing with existing deviceId: ${verifyError.message}`
+              );
+              // Continue with existing deviceId if verification fails
+            }
           }
-          finalDeviceId = Number(existingDeviceIdFromStorage); // Ensure it's a number if store expects that
-          console.log(
-            `[SignalContext Store Effect] Using existing deviceId from localStorage: ${finalDeviceId}`
-          );
         }
 
         // ---------- 3️⃣ Expose state to the rest of the app ----------
