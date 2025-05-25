@@ -120,6 +120,21 @@ export function ChatWindow({
                     Old messages sent before device cleanup cannot be recovered
                   </li>
                 </ul>
+                <div className="mt-3 p-3 bg-amber-800/30 rounded border border-amber-600/50">
+                  <p className="text-xs text-amber-100">
+                    <strong>Why this happens:</strong> For security, each device
+                    has unique encryption keys. When devices are reset, old keys
+                    are permanently deleted to protect your privacy. This
+                    prevents anyone from accessing your messages if a device is
+                    compromised.
+                  </p>
+                  <p className="text-xs text-amber-100 mt-2">
+                    <strong>Future improvement:</strong> We could add secure
+                    message backup that encrypts your message history with a
+                    master key, allowing recovery across devices while
+                    maintaining end-to-end encryption.
+                  </p>
+                </div>
               </div>
               <div className="mt-3">
                 <button
