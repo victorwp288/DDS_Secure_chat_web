@@ -22,6 +22,9 @@ export function ChatWindow({
   isReady,
   sendLoading,
   sendingStatus,
+  profile,
+  getUserPresence,
+  isUserOnline,
 }) {
   // Check if chat is inactive due to status issues
   const chatInactive =
@@ -43,6 +46,8 @@ export function ChatWindow({
         onConversationUpdate={onConversationUpdate}
         onSelectedConversationUpdate={onSelectedConversationUpdate}
         onError={onError}
+        getUserPresence={getUserPresence}
+        isUserOnline={isUserOnline}
       />
 
       <MessageList
@@ -50,6 +55,7 @@ export function ChatWindow({
         loading={messagesLoading}
         selectedConversation={selectedConversation}
         messagesEndRef={messagesEndRef}
+        profile={profile}
       />
 
       <MessageInput

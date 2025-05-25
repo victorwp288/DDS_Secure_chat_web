@@ -14,7 +14,7 @@ import {
 import { downloadAndDecryptFile } from "../../lib/fileUpload";
 import { useState } from "react";
 
-export function MessageBubble({ message }) {
+export function MessageBubble({ message, profile }) {
   const [downloadingFile, setDownloadingFile] = useState(false);
 
   // Try to parse message content to extract file info
@@ -232,7 +232,11 @@ export function MessageBubble({ message }) {
       <Avatar className="h-8 w-8 flex-shrink-0">
         <AvatarImage src={message.senderAvatar} />
         <AvatarFallback>
-          {message.senderName ? message.senderName[0] : "?"}
+          {message.isSelf && profile
+            ? (profile.full_name || profile.username || "Me")[0].toUpperCase()
+            : message.senderName
+            ? message.senderName[0].toUpperCase()
+            : "?"}
         </AvatarFallback>
       </Avatar>
 

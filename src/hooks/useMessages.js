@@ -57,67 +57,78 @@ async function safeProcessPreKey(store, userId, deviceId, bundle) {
     );
   }
 
+  // Check if we already have a working session
+  let hasExistingSession = false;
   try {
+    const existingSession = await store.loadSession(addrStr);
+    hasExistingSession = !!existingSession;
     console.log(
-      `[safeProcessPreKey] Attempting SessionBuilder.processPreKey for ${addrStr}...`
+      `[safeProcessPreKey] Session check for ${addrStr}: ${
+        hasExistingSession ? "EXISTS" : "NONE"
+      }`
     );
-    await builder.processPreKey(bundle);
+  } catch (e) {
     console.log(
-      `[safeProcessPreKey] Session built/updated successfully for ${addrStr}.`
+      `[safeProcessPreKey] Could not check existing session for ${addrStr}, assuming none: ${e.message}`
     );
-    return true; // Indicate success
-  } catch (err) {
-    if (err.message?.includes("Identity key changed")) {
-      console.warn(
-        `[safeProcessPreKey] Genuine identity key rotation detected by processPreKey for ${addrStr}. Clearing old session/identity, re-saving new identity, and retrying processPreKey.`
+    hasExistingSession = false;
+  }
+
+  // Only build session if we don't have one
+  if (!hasExistingSession) {
+    try {
+      console.log(
+        `[safeProcessPreKey] No existing session for ${addrStr}. Building new session...`
       );
+      await builder.processPreKey(bundle);
+      console.log(
+        `[safeProcessPreKey] New session built successfully for ${addrStr}.`
+      );
+    } catch (err) {
+      if (err.message?.includes("Identity key changed")) {
+        console.warn(
+          `[safeProcessPreKey] Identity key rotation detected for ${addrStr}. Clearing old session/identity and retrying...`
+        );
 
-      try {
-        await store.removeSession(addrStr);
+        try {
+          await store.removeSession(addrStr);
 
-        if (typeof store.removeIdentity === "function") {
-          await store.removeIdentity(addrStr);
+          if (typeof store.removeIdentity === "function") {
+            await store.removeIdentity(addrStr);
+            console.log(
+              `[safeProcessPreKey] Removed old identity for ${addrStr}.`
+            );
+          }
+
+          await store.saveIdentity(addrStr, bundle.identityKey);
           console.log(
-            `[safeProcessPreKey] Removed old identity for ${addrStr}.`
+            `[safeProcessPreKey] Re-saved new identity for ${addrStr} after rotation.`
           );
-        } else {
-          console.warn(
-            `[safeProcessPreKey] store.removeIdentity is not a function. Attempting to overwrite identity for ${addrStr}.`
+
+          // Create a new builder instance after clearing session
+          const newBuilder = new SessionBuilder(store, addr);
+          await newBuilder.processPreKey(bundle);
+          console.log(
+            `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after identity rotation.`
           );
+        } catch (err2) {
+          console.error(
+            `[safeProcessPreKey] Failed to rebuild session for ${addrStr} after identity rotation: ${err2.message}`
+          );
+          return false;
         }
-
-        await store.saveIdentity(addrStr, bundle.identityKey);
-        console.log(
-          `[safeProcessPreKey] Re-saved new identity for ${addrStr} due to rotation detected by processPreKey.`
-        );
-
-        // Create a new builder instance after clearing session
-        const newBuilder = new SessionBuilder(store, addr);
-        console.log(
-          `[safeProcessPreKey] Retrying SessionBuilder.processPreKey for ${addrStr} after identity reset...`
-        );
-        await newBuilder.processPreKey(bundle);
-        console.log(
-          `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after genuine key rotation.`
-        );
-        return true; // Indicate success after retry
-      } catch (err2) {
+      } else {
         console.error(
-          `[safeProcessPreKey] Second SessionBuilder.processPreKey FAILED for ${addrStr} even after handling rotation: ${err2.message}. Skipping this device.`,
-          err2
+          `[safeProcessPreKey] Error building session for ${addrStr}: ${err.message}`
         );
-        // Return false to indicate this device should be skipped
         return false;
       }
-    } else {
-      console.error(
-        `[safeProcessPreKey] Error during SessionBuilder.processPreKey for ${addrStr} (not identity change): ${err.message}. Skipping this device.`,
-        err
-      );
-      // Return false to indicate this device should be skipped
-      return false;
     }
+  } else {
+    console.log(`[safeProcessPreKey] Using existing session for ${addrStr}.`);
   }
+
+  return true;
 }
 
 export function useMessages(
@@ -428,9 +439,15 @@ export function useMessages(
                   );
                   processedContent =
                     "[Decryption Failed - Bad MAC / Wrong Key]";
-                } else if (decryptionError.message?.includes("Bad MAC")) {
+                } else if (
+                  decryptionError.message?.includes("Bad MAC") ||
+                  decryptionError.message?.includes("No record for device")
+                ) {
+                  const errorType = decryptionError.message?.includes("Bad MAC")
+                    ? "Bad MAC"
+                    : "No record for device";
                   console.warn(
-                    `[useMessages Recover] Bad MAC detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry...`
+                    `[useMessages Recover] ${errorType} detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry...`
                   );
                   try {
                     await signalStore.removeSession(addrStr);
@@ -514,7 +531,7 @@ export function useMessages(
                   }
                 } else {
                   console.error(
-                    `[useMessages] Decryption error for msg ${msg.id} (not Bad MAC):`,
+                    `[useMessages] Decryption error for msg ${msg.id} (not Bad MAC or No record):`,
                     decryptionError
                   );
                   processedContent = "[Decryption Error - Other]";

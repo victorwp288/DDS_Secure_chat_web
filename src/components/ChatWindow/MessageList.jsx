@@ -6,6 +6,7 @@ export function MessageList({
   loading,
   selectedConversation,
   messagesEndRef,
+  profile,
 }) {
   // Check if chat is inactive due to status issues
   const chatInactive =
@@ -86,7 +87,11 @@ export function MessageList({
 
         {!loading &&
           messages.map((message) => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble
+              key={message.id}
+              message={message}
+              profile={profile}
+            />
           ))}
 
         <div ref={messagesEndRef} />

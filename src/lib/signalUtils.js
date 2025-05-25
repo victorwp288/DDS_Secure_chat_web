@@ -413,10 +413,10 @@ export const decryptMessage = async (
       } catch (e) {
         if (e instanceof Error && e.message?.includes("Bad MAC")) {
           console.error(
-            `🛑 Bad MAC error decrypting WhisperMessage (Type 1) from ${senderAddressString}. This could be due to out-of-order messages or session state mismatch. No automatic retry. Raw error:`,
+            `🛑 Bad MAC error decrypting WhisperMessage (Type 1) from ${senderAddressString}. This could be due to out-of-order messages or session state mismatch. Will throw for recovery handling. Raw error:`,
             e
           );
-          plaintextBuffer = null;
+          throw e; // Throw instead of setting to null so recovery logic can handle it
         } else {
           console.error(
             `Non-MAC decryption error (WhisperMessage) from ${senderAddressString}:`,
@@ -452,6 +452,15 @@ export const decryptMessage = async (
       `Decryption failed catastrophically for message from ${senderAddressString}:`,
       error
     );
+
+    // Re-throw specific errors that can be recovered from
+    if (
+      error.message?.includes("No record for device") ||
+      error.message?.includes("Bad MAC")
+    ) {
+      throw error;
+    }
+
     return null;
   }
 };

@@ -54,89 +54,75 @@ async function safeProcessPreKey(store, userId, deviceId, bundle) {
     );
   }
 
+  // Check if we already have a working session
+  let hasExistingSession = false;
   try {
+    const existingSession = await store.loadSession(addrStr);
+    hasExistingSession = !!existingSession;
     console.log(
-      `[safeProcessPreKey] Attempting SessionBuilder.processPreKey for ${addrStr}...`
+      `[safeProcessPreKey] Session check for ${addrStr}: ${
+        hasExistingSession ? "EXISTS" : "NONE"
+      }`
     );
-    await builder.processPreKey(bundle);
+  } catch (e) {
     console.log(
-      `[safeProcessPreKey] Session built/updated successfully for ${addrStr}.`
+      `[safeProcessPreKey] Could not check existing session for ${addrStr}, assuming none: ${e.message}`
     );
-  } catch (err) {
-    if (err.message?.includes("Identity key changed")) {
-      console.warn(
-        `[safeProcessPreKey] Genuine identity key rotation detected by processPreKey for ${addrStr}. Clearing old session/identity, re-saving new identity, and retrying processPreKey.`
-      );
-      await store.removeSession(addrStr);
+    hasExistingSession = false;
+  }
 
-      if (typeof store.removeIdentity === "function") {
-        await store.removeIdentity(addrStr);
-        console.log(`[safeProcessPreKey] Removed old identity for ${addrStr}.`);
-      } else {
-        console.warn(
-          `[safeProcessPreKey] store.removeIdentity is not a function. Attempting to overwrite identity for ${addrStr}.`
-        );
-      }
-
-      await store.saveIdentity(addrStr, bundle.identityKey);
+  // Only build session if we don't have one
+  if (!hasExistingSession) {
+    try {
       console.log(
-        `[safeProcessPreKey] Re-saved new identity for ${addrStr} due to rotation detected by processPreKey.`
+        `[safeProcessPreKey] No existing session for ${addrStr}. Building new session...`
       );
+      await builder.processPreKey(bundle);
+      console.log(
+        `[safeProcessPreKey] New session built successfully for ${addrStr}.`
+      );
+    } catch (err) {
+      if (err.message?.includes("Identity key changed")) {
+        console.warn(
+          `[safeProcessPreKey] Identity key rotation detected for ${addrStr}. Clearing old session/identity and retrying...`
+        );
+        await store.removeSession(addrStr);
 
-      try {
-        console.log(
-          `[safeProcessPreKey] Retrying SessionBuilder.processPreKey for ${addrStr} after identity reset...`
-        );
-        await builder.processPreKey(bundle);
-        console.log(
-          `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after genuine key rotation.`
-        );
-      } catch (err2) {
-        console.error(
-          `[safeProcessPreKey] Second SessionBuilder.processPreKey FAILED for ${addrStr} even after handling rotation: ${err2.message}. Rethrowing.`,
-          err2
-        );
-
-        // ✅ NEW FALLBACK: If still failing after identity reset, forcefully remove ALL related data
-        if (err2.message?.includes("Identity key changed")) {
-          console.warn(
-            `[safeProcessPreKey] FINAL FALLBACK: Forcefully clearing ALL data for ${addrStr} and continuing without encryption for this device.`
+        if (typeof store.removeIdentity === "function") {
+          await store.removeIdentity(addrStr);
+          console.log(
+            `[safeProcessPreKey] Removed old identity for ${addrStr}.`
           );
-
-          try {
-            // Clear absolutely everything
-            await store.removeSession(addrStr);
-            if (typeof store.removeIdentity === "function") {
-              await store.removeIdentity(addrStr);
-            }
-
-            // Force save the new identity without any checks
-            await store.saveIdentity(addrStr, bundle.identityKey, true); // Force trust
-
-            console.log(
-              `[safeProcessPreKey] FINAL FALLBACK: Cleared all data and force-trusted identity for ${addrStr}. Device will be skipped for this message.`
-            );
-
-            // Don't throw - let the caller handle this device being skipped
-            return false; // Indicate this device should be skipped
-          } catch (fallbackError) {
-            console.error(
-              `[safeProcessPreKey] FINAL FALLBACK failed for ${addrStr}:`,
-              fallbackError
-            );
-          }
         }
 
-        throw err2;
+        await store.saveIdentity(addrStr, bundle.identityKey);
+        console.log(
+          `[safeProcessPreKey] Re-saved new identity for ${addrStr} after rotation.`
+        );
+
+        try {
+          await builder.processPreKey(bundle);
+          console.log(
+            `[safeProcessPreKey] Session rebuilt successfully for ${addrStr} after identity rotation.`
+          );
+        } catch (err2) {
+          console.error(
+            `[safeProcessPreKey] Failed to rebuild session for ${addrStr} after identity rotation: ${err2.message}`
+          );
+          return false;
+        }
+      } else {
+        console.error(
+          `[safeProcessPreKey] Error building session for ${addrStr}: ${err.message}`
+        );
+        return false;
       }
-    } else {
-      console.error(
-        `[safeProcessPreKey] Error during SessionBuilder.processPreKey for ${addrStr} (not identity change): ${err.message}. Rethrowing.`,
-        err
-      );
-      throw err;
     }
+  } else {
+    console.log(`[safeProcessPreKey] Using existing session for ${addrStr}.`);
   }
+
+  return true;
 }
 
 export function useSendMessage(signalContext, currentUser, profile) {
