@@ -4,12 +4,19 @@ import { supabase } from "../lib/supabaseClient";
 export function usePresence(currentUser, deviceId) {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const heartbeatIntervalRef = useRef(null);
+  const statusIntervalRef = useRef(null);
   const lastHeartbeatRef = useRef(null);
 
   // Track browser online/offline status
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
+    const handleOnline = () => {
+      console.log("[Presence] Browser came online");
+      setIsOnline(true);
+    };
+    const handleOffline = () => {
+      console.log("[Presence] Browser went offline");
+      setIsOnline(false);
+    };
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
@@ -36,7 +43,9 @@ export function usePresence(currentUser, deviceId) {
       if (error) {
         console.warn("[Presence] Error updating user status:", error);
       } else {
-        console.log(`[Presence] Updated user status to: ${status}`);
+        console.log(
+          `[Presence] Updated user ${currentUser.id} status to: ${status}`
+        );
       }
     } catch (error) {
       console.warn("[Presence] Error updating user status:", error);
@@ -84,30 +93,53 @@ export function usePresence(currentUser, deviceId) {
     // Update device heartbeat immediately
     updateDeviceHeartbeat();
 
-    // Set up heartbeat interval (every 30 seconds)
+    // Set up heartbeat interval (every 20 seconds - more frequent)
     heartbeatIntervalRef.current = setInterval(() => {
       if (isOnline) {
         updateDeviceHeartbeat();
       }
-    }, 30000);
+    }, 20000);
 
-    // Set up status update when online state changes
-    const statusToSet = isOnline ? "online" : "offline";
-    updateUserStatus(statusToSet);
+    // Set up status update interval (every 30 seconds - keep status fresh)
+    statusIntervalRef.current = setInterval(() => {
+      if (isOnline) {
+        updateUserStatus("online");
+      }
+    }, 30000);
 
     return () => {
       console.log(`[Presence] Cleaning up presence for user ${currentUser.id}`);
 
-      // Clear heartbeat interval
+      // Clear intervals
       if (heartbeatIntervalRef.current) {
         clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = null;
+      }
+      if (statusIntervalRef.current) {
+        clearInterval(statusIntervalRef.current);
+        statusIntervalRef.current = null;
       }
 
       // Set user offline when component unmounts (logout, page close, etc.)
       updateUserStatus("offline");
     };
-  }, [currentUser?.id, deviceId, isOnline]);
+  }, [currentUser?.id, deviceId]);
+
+  // Handle online/offline state changes
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    const statusToSet = isOnline ? "online" : "offline";
+    console.log(
+      `[Presence] Browser online state changed to: ${isOnline}, setting status: ${statusToSet}`
+    );
+    updateUserStatus(statusToSet);
+
+    if (isOnline) {
+      // When coming back online, update heartbeat immediately
+      updateDeviceHeartbeat();
+    }
+  }, [isOnline, currentUser?.id]);
 
   // Handle page visibility changes
   useEffect(() => {
@@ -115,16 +147,15 @@ export function usePresence(currentUser, deviceId) {
       if (!currentUser?.id) return;
 
       if (document.hidden) {
-        // Page is hidden, but don't immediately set offline
-        // The heartbeat will stop and the cleanup function will handle it
-        console.log("[Presence] Page hidden, heartbeat will continue");
+        console.log("[Presence] Page hidden");
+        // Don't immediately set offline, let the heartbeat handle it
       } else {
+        console.log("[Presence] Page visible");
         // Page is visible again, ensure we're online if browser is online
         if (isOnline) {
           updateUserStatus("online");
           updateDeviceHeartbeat();
         }
-        console.log("[Presence] Page visible, updated presence");
       }
     };
 
@@ -139,6 +170,7 @@ export function usePresence(currentUser, deviceId) {
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (currentUser?.id) {
+        console.log("[Presence] Page unloading, setting offline status");
         // Use sendBeacon for reliable offline status update on page unload
         const data = JSON.stringify({
           user_id: currentUser.id,
@@ -148,7 +180,8 @@ export function usePresence(currentUser, deviceId) {
 
         // Try to send offline status via beacon (more reliable than fetch on unload)
         if (navigator.sendBeacon) {
-          navigator.sendBeacon("/api/presence/offline", data);
+          const success = navigator.sendBeacon("/api/presence/offline", data);
+          console.log(`[Presence] Beacon sent: ${success}`);
         }
       }
     };

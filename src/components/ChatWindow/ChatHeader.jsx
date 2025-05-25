@@ -45,17 +45,17 @@ export function ChatHeader({
       !getUserPresence ||
       !isUserOnline
     ) {
-      return "Offline";
+      return "Offline (no data)";
     }
 
     if (selectedConversation.is_group) {
       // For groups, count online members (excluding self)
-      const onlineCount = selectedConversation.participants.filter(
+      const onlineMembers = selectedConversation.participants.filter(
         (p) => p.id !== currentUser?.id && isUserOnline(p.id)
-      ).length;
+      );
 
-      if (onlineCount > 0) {
-        return `${onlineCount} online`;
+      if (onlineMembers.length > 0) {
+        return `${onlineMembers.length} online`;
       }
       return "No one online";
     } else {
@@ -64,10 +64,24 @@ export function ChatHeader({
         (p) => p.id !== currentUser?.id
       );
 
-      if (otherParticipant && isUserOnline(otherParticipant.id)) {
-        return "Online";
+      if (otherParticipant) {
+        const presence = getUserPresence(otherParticipant.id);
+        const isOnline = isUserOnline(otherParticipant.id);
+
+        // Debug info
+        console.log(`[ChatHeader] Presence for ${otherParticipant.id}:`, {
+          presence,
+          isOnline,
+          status: presence.status,
+          lastSeen: presence.lastSeen,
+        });
+
+        if (isOnline) {
+          return "Online";
+        }
+        return `Offline (${presence.status || "unknown"})`;
       }
-      return "Offline";
+      return "Offline (no participant)";
     }
   };
 

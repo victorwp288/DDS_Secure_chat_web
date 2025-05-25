@@ -32,11 +32,11 @@ export function useUserPresence(userIds = []) {
         data.forEach((user) => {
           // Consider user online if:
           // 1. Status is 'online' AND
-          // 2. Last update was within the last 2 minutes
+          // 2. Last update was within the last 90 seconds (reduced from 2 minutes)
           const lastUpdate = new Date(user.updated_at);
           const now = new Date();
           const timeDiff = now - lastUpdate;
-          const isRecent = timeDiff < 2 * 60 * 1000; // 2 minutes
+          const isRecent = timeDiff < 90 * 1000; // 90 seconds
 
           presenceMap[user.id] = {
             status: user.status,
@@ -55,33 +55,40 @@ export function useUserPresence(userIds = []) {
     fetchPresence();
 
     // Set up real-time subscription for presence updates
+    // Use a more specific channel name to avoid conflicts
+    const channelName = `presence-${userIds.join("-")}`;
     const channel = supabase
-      .channel("user-presence-updates")
+      .channel(channelName)
       .on(
         "postgres_changes",
         {
           event: "UPDATE",
           schema: "public",
           table: "profiles",
-          filter: `id=in.(${userIds.join(",")})`,
+          // Remove the filter to catch all profile updates, then filter in the handler
         },
         (payload) => {
           const { new: updatedUser } = payload;
-          console.log("[UserPresence] Real-time presence update:", updatedUser);
+
+          // Only process updates for users we're tracking
+          if (!userIds.includes(updatedUser.id)) {
+            return;
+          }
+
+          console.log("[UserPresence] Real-time presence update:", {
+            userId: updatedUser.id,
+            status: updatedUser.status,
+            updated_at: updatedUser.updated_at,
+          });
 
           setPresenceData((prev) => {
-            // Check if this user is in our tracking list
-            if (!userIds.includes(updatedUser.id)) {
-              return prev;
-            }
-
             // Calculate if user is considered online
             const lastUpdate = new Date(updatedUser.updated_at);
             const now = new Date();
             const timeDiff = now - lastUpdate;
-            const isRecent = timeDiff < 2 * 60 * 1000; // 2 minutes
+            const isRecent = timeDiff < 90 * 1000; // 90 seconds
 
-            return {
+            const newPresenceData = {
               ...prev,
               [updatedUser.id]: {
                 status: updatedUser.status,
@@ -89,6 +96,12 @@ export function useUserPresence(userIds = []) {
                 lastSeen: updatedUser.updated_at,
               },
             };
+
+            console.log(
+              `[UserPresence] Updated presence for user ${updatedUser.id}:`,
+              newPresenceData[updatedUser.id]
+            );
+            return newPresenceData;
           });
         }
       )
@@ -96,11 +109,15 @@ export function useUserPresence(userIds = []) {
         if (err) {
           console.error("[UserPresence] Subscription error:", err);
         } else {
-          console.log("[UserPresence] Subscription status:", status);
+          console.log(
+            `[UserPresence] Subscription status for ${channelName}:`,
+            status
+          );
         }
       });
 
     // Set up periodic cleanup to mark stale "online" users as offline
+    // Reduced interval for more responsive updates
     const cleanupInterval = setInterval(() => {
       setPresenceData((prev) => {
         const now = new Date();
@@ -109,19 +126,21 @@ export function useUserPresence(userIds = []) {
 
         Object.keys(updated).forEach((userId) => {
           const userData = updated[userId];
-          if (userData.status === "online") {
+          if (userData.status === "online" && userData.isOnline) {
             const lastUpdate = new Date(userData.lastSeen);
             const timeDiff = now - lastUpdate;
 
-            // If last update was more than 2 minutes ago, consider offline
-            if (timeDiff > 2 * 60 * 1000) {
+            // If last update was more than 90 seconds ago, consider offline
+            if (timeDiff > 90 * 1000) {
               updated[userId] = {
                 ...userData,
                 isOnline: false,
               };
               hasChanges = true;
               console.log(
-                `[UserPresence] Marking user ${userId} as offline due to stale data`
+                `[UserPresence] Marking user ${userId} as offline due to stale data (${Math.round(
+                  timeDiff / 1000
+                )}s ago)`
               );
             }
           }
@@ -129,12 +148,21 @@ export function useUserPresence(userIds = []) {
 
         return hasChanges ? updated : prev;
       });
-    }, 30000); // Check every 30 seconds
+    }, 15000); // Check every 15 seconds (reduced from 30)
+
+    // Periodic refresh of presence data to catch any missed updates
+    const refreshInterval = setInterval(() => {
+      console.log("[UserPresence] Periodic refresh of presence data");
+      fetchPresence();
+    }, 60000); // Refresh every minute
 
     return () => {
-      console.log("[UserPresence] Cleaning up presence subscription");
+      console.log(
+        `[UserPresence] Cleaning up presence subscription for ${channelName}`
+      );
       supabase.removeChannel(channel);
       clearInterval(cleanupInterval);
+      clearInterval(refreshInterval);
     };
   }, [userIds.join(",")]); // Re-run when user list changes
 

@@ -154,6 +154,14 @@ export function ChatSidebar({
               </p>
               <p className="text-xs text-slate-400">
                 {profile?.status === "online" ? "Online" : "Offline"}
+                {/* Debug indicator */}
+                <span className="ml-2 text-xs opacity-50">
+                  ({profile?.status || "unknown"} -{" "}
+                  {new Date(
+                    profile?.updated_at || Date.now()
+                  ).toLocaleTimeString()}
+                  )
+                </span>
               </p>
             </div>
           </Link>
