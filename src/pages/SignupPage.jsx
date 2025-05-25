@@ -87,48 +87,26 @@ export default function SignupPage() {
       }
       console.log(`Profile upserted successfully for user ${newUser.id}.`);
 
-      console.log(`Checking for existing key bundle for user ${newUser.id}...`);
-      const { data: existingKeys, error: keyCheckError } = await supabase
-        .from("prekey_bundles")
-        .select("user_id")
-        .eq("user_id", newUser.id)
-        .maybeSingle();
+      console.log(
+        `Profile created successfully for user ${newUser.id}. Keys will be registered via SignalProvider on chat page load.`
+      );
 
-      if (keyCheckError) {
-        console.error("Error checking for existing keys:", keyCheckError);
-        throw new Error(
-          `Failed to check for existing encryption keys: ${keyCheckError.message}`
+      // Check if user needs email confirmation
+      if (
+        signUpData.session &&
+        signUpData.session.user.email_confirmed_at === null
+      ) {
+        setError(
+          "Account created! Please check your email to confirm your account before logging in."
         );
-      }
-
-      if (!existingKeys) {
-        console.log(
-          `No existing keys found. User ${newUser.id} will register keys via SignalProvider on chat page load.`
-        );
-
-        // Check if user needs email confirmation
-        if (
-          signUpData.session &&
-          signUpData.session.user.email_confirmed_at === null
-        ) {
-          setError(
-            "Account created! Please check your email to confirm your account before logging in."
-          );
-        } else if (signUpData.user) {
-          console.log("Navigating to chat...");
-          navigate("/chat");
-        } else {
-          // Should not happen if signup succeeded, but handle defensively
-          setError(
-            "Signup seems complete, but login state is unclear. Please try logging in or check your email."
-          );
-        }
-      } else {
-        console.log(
-          `Encryption keys already exist for user ${newUser.id}. Skipping generation.`
-        );
-        console.log("Existing keys found. Navigating to chat...");
+      } else if (signUpData.user) {
+        console.log("Navigating to chat...");
         navigate("/chat");
+      } else {
+        // Should not happen if signup succeeded, but handle defensively
+        setError(
+          "Signup seems complete, but login state is unclear. Please try logging in or check your email."
+        );
       }
     } catch (err) {
       console.error("Error during sign up process (before key gen):", err);

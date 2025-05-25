@@ -90,19 +90,22 @@ export default async function handler(req, res) {
       );
     }
 
-    // STEP 3: Delete prekey bundles
-    const { error: prekeyDeleteError } = await supabaseAdmin
-      .from("prekey_bundles")
-      .delete()
+    // STEP 3: Clear pre-key data from bundles (set to NULL)
+    const { error: prekeyUpdateError } = await supabaseAdmin
+      .from("bundles")
+      .update({
+        pre_key_id: null,
+        pre_key_public_b64: null,
+      })
       .in("device_id", deviceIds);
 
-    if (prekeyDeleteError) {
+    if (prekeyUpdateError) {
       console.warn(
-        `[Cleanup API] Error deleting prekey bundles: ${prekeyDeleteError.message}`
+        `[Cleanup API] Error clearing pre-key data from bundles: ${prekeyUpdateError.message}`
       );
     } else {
       console.log(
-        `[Cleanup API] Deleted prekey bundles for devices: ${deviceIds.join(
+        `[Cleanup API] Cleared pre-key data from bundles for devices: ${deviceIds.join(
           ", "
         )}`
       );

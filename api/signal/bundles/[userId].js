@@ -2,87 +2,43 @@
 import { supabaseAdmin } from "../../_supabase.js";
 import { corsHandler } from "../../../lib/cors.js";
 
-// --- Helper function to get and delete one pre-key --- START ---
-// Attempts to atomically retrieve and delete one pre-key for a device.
-// Returns the key data { preKeyId, preKeyPublicKey } or null if none available/error.
-async function getAndDeleteOnePreKey(deviceId) {
+// --- Helper function to get pre-key from bundles table --- START ---
+// Gets the pre-key from the bundles table for a device.
+// Returns the key data { preKeyId, preKeyPublicKey } or null if none available.
+async function getPreKeyFromBundle(deviceId) {
   try {
-    // 1. Find one available pre-key for the device
-    // Adjust column names if they differ in your 'prekey_bundles' table
-    const { data: foundKey, error: findError } = await supabaseAdmin
-      .from("prekey_bundles") // CORRECTED TABLE NAME
-      .select("prekey_id, public_key_b64") // Use actual column name
+    const { data: bundle, error: findError } = await supabaseAdmin
+      .from("bundles")
+      .select("pre_key_id, pre_key_public_b64")
       .eq("device_id", deviceId)
-      .order("prekey_id", { ascending: true })
-      .limit(1)
-      .maybeSingle(); // Use maybeSingle to handle 0 rows gracefully
+      .maybeSingle();
 
     if (findError) {
       console.error(
-        `[GetPreKey] Error finding pre-key for device ${deviceId}:`,
+        `[GetPreKey] Error finding bundle for device ${deviceId}:`,
         findError
       );
-      return null; // Don't throw, just return null if finding fails
+      return null;
     }
 
-    if (!foundKey) {
-      // console.log(`[GetPreKey] No pre-keys available for device ${deviceId}.`);
-      return null; // No keys left for this device
+    if (!bundle || !bundle.pre_key_id || !bundle.pre_key_public_b64) {
+      // console.log(`[GetPreKey] No pre-key available for device ${deviceId}.`);
+      return null;
     }
 
-    // --- ADDED: Check if foundKey.prekey_id is valid --- START ---
-    if (typeof foundKey.prekey_id !== "number") {
-      console.error(
-        `[GetPreKey] Found pre-key row for device ${deviceId}, but its prekey_id is invalid (not a number): ${foundKey.prekey_id}. Skipping delete.`
-      );
-      return null; // Cannot proceed without a valid numeric ID
-    }
-    // --- ADDED: Check if foundKey.prekey_id is valid --- END ---
-
-    // 2. Attempt to delete the specific key we found
-    const { count: deleteCount, error: deleteError } = await supabaseAdmin
-      .from("prekey_bundles") // CORRECTED TABLE NAME
-      .delete()
-      .eq("device_id", deviceId) // ADDED: Filter by device_id
-      .eq("prekey_id", foundKey.prekey_id) // Use actual column name and correct field from foundKey
-      .order("prekey_id", { ascending: true })
-      .limit(1); // ADDED: Limit to 1 (safety, though PK should ensure it)
-
-    if (deleteError) {
-      // Log unexpected DB errors during delete
-      console.error(
-        `[GetPreKey] Error deleting pre-key ${foundKey.prekey_id} for device ${deviceId}:`,
-        deleteError
-      );
-      return null; // Failed to secure the key
-    }
-
-    // --- ADDED: Check if delete succeeded (handles race condition) --- START ---
-    if (deleteCount !== 1) {
-      // This means the key was likely deleted by another request between our SELECT and DELETE.
-      console.warn(
-        `[GetPreKey] Failed to delete pre-key ${foundKey.prekey_id} for device ${deviceId} (deleteCount: ${deleteCount}, expected 1 - likely race condition or key already gone).`
-      );
-      return null; // Treat as key not available
-    }
-    // --- ADDED: Check if delete succeeded (handles race condition) --- END ---
-
-    // console.log(`[GetPreKey] Successfully retrieved and deleted pre-key ${foundKey.prekey_id} for device ${deviceId}.`);
-    // Return the key data needed for the bundle
     return {
-      preKeyId: foundKey.prekey_id,
-      preKeyPublicKey: foundKey.public_key_b64,
+      preKeyId: bundle.pre_key_id,
+      preKeyPublicKey: bundle.pre_key_public_b64,
     };
   } catch (e) {
-    // Catch any unexpected errors during the process
     console.error(
-      `[GetPreKey] Unexpected error getting/deleting key for device ${deviceId}:`,
+      `[GetPreKey] Unexpected error getting pre-key for device ${deviceId}:`,
       e
     );
     return null;
   }
 }
-// --- Helper function to get and delete one pre-key --- END ---
+// --- Helper function to get pre-key from bundles table --- END ---
 
 export default async function handler(req, res) {
   // Handle CORS
@@ -110,7 +66,7 @@ export default async function handler(req, res) {
       return res.status(200).json([]); // No devices, return empty array
     }
 
-    // fetch bundles (without pre-key info)
+    // fetch bundles (including pre-key info)
     const { data: bundlesData, error: bundleErr } = await supabaseAdmin
       .from("bundles")
       .select(
@@ -120,9 +76,11 @@ export default async function handler(req, res) {
         identity_key_b64,
         signed_pre_key_id,
         signed_pre_key_public_b64,
-        signed_pre_key_sig_b64
+        signed_pre_key_sig_b64,
+        pre_key_id,
+        pre_key_public_b64
       `
-      ) // Removed pre_key fields
+      )
       .in("device_id", deviceIds);
 
     if (bundleErr) throw bundleErr;
@@ -140,8 +98,8 @@ export default async function handler(req, res) {
         return null; // Skip if bundle somehow missing for existing device
       }
 
-      // Attempt to get ONE pre-key for this device
-      const preKey = await getAndDeleteOnePreKey(deviceId);
+      // Attempt to get pre-key for this device from bundles table
+      const preKey = await getPreKeyFromBundle(deviceId);
 
       // Shape the final bundle object
       const finalBundle = {
