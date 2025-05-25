@@ -1,8 +1,11 @@
 // api/device/[deviceId].js
 import { supabaseAdmin } from "../_supabase.js";
-import { cors } from "../../lib/cors.js";
+import { corsHandler } from "../../lib/cors.js";
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
   const { deviceId } = req.query;
 
   if (req.method !== "DELETE") {
@@ -32,4 +35,4 @@ export default cors(async function handler(req, res) {
     console.error(err);
     return res.status(500).json({ error: err.message });
   }
-});
+}

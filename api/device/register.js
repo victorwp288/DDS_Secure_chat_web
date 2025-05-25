@@ -1,7 +1,7 @@
 // api/device/register.js
 import { Buffer } from "buffer";
 import { supabaseAdmin } from "../_supabase.js";
-import { cors } from "../../lib/cors.js";
+import { corsHandler } from "../../lib/cors.js";
 
 // --- NEW Robust publicKey extraction function (and helper) --- START ---
 function bytesObjectToB64(obj) {
@@ -58,7 +58,11 @@ function extractPublicKeyB64(k) {
 }
 // --- NEW Robust publicKey extraction function (and helper) --- END ---
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end();
@@ -295,4 +299,4 @@ export default cors(async function handler(req, res) {
       .status(500)
       .json({ error: err.message || "Internal Server Error" });
   }
-});
+}

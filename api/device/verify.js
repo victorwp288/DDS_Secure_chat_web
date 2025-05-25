@@ -1,7 +1,11 @@
 import { supabaseAdmin } from "../_supabase.js";
-import { cors } from "../../lib/cors.js";
+import { corsHandler } from "../../lib/cors.js";
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end();
@@ -46,4 +50,4 @@ export default cors(async function handler(req, res) {
       error: err.message || "Internal Server Error",
     });
   }
-});
+}

@@ -1,12 +1,15 @@
 import { createClient } from "@supabase/supabase-js";
-import { cors } from "../../lib/cors.js";
+import { corsHandler } from "../../lib/cors.js";
 
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).end();
@@ -136,4 +139,4 @@ export default cors(async function handler(req, res) {
       details: error.message,
     });
   }
-});
+}

@@ -1,6 +1,6 @@
 // api/signal/bundles/[userId].js
 import { supabaseAdmin } from "../../_supabase.js";
-import { cors } from "../../../lib/cors.js";
+import { corsHandler } from "../../../lib/cors.js";
 
 // --- Helper function to get and delete one pre-key --- START ---
 // Attempts to atomically retrieve and delete one pre-key for a device.
@@ -84,7 +84,11 @@ async function getAndDeleteOnePreKey(deviceId) {
 }
 // --- Helper function to get and delete one pre-key --- END ---
 
-export default cors(async function handler(req, res) {
+export default async function handler(req, res) {
+  // Handle CORS
+  const corsHandled = corsHandler(req, res);
+  if (corsHandled) return;
+
   const { userId } = req.query;
 
   if (req.method !== "GET") {
@@ -170,4 +174,4 @@ export default cors(async function handler(req, res) {
       .status(500)
       .json({ error: err.message || "Internal Server Error" });
   }
-});
+}
