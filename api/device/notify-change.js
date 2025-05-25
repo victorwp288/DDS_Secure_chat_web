@@ -30,8 +30,7 @@ export default async function handler(req, res) {
         `
         conversation_id,
         conversations!inner(
-          id,
-          type
+          id
         )
       `
       )

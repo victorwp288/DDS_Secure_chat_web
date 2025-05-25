@@ -15,39 +15,43 @@ export default async function handler(req, res) {
 
   if (!userId || !deviceId) {
     return res.status(400).json({
-      error: "Missing userId or deviceId",
+      error: "Missing required fields: userId, deviceId",
     });
   }
 
   try {
     console.log(
-      `[Verify API] Checking if device ${deviceId} exists for user ${userId}...`
+      `[Device Verify] Checking if device ${deviceId} exists for user ${userId}`
     );
 
+    // Check if the device exists in the database
     const { data: device, error: deviceError } = await supabaseAdmin
       .from("devices")
-      .select("device_id")
-      .eq("device_id", deviceId)
+      .select("device_id, user_id")
       .eq("user_id", userId)
-      .maybeSingle();
+      .eq("device_id", deviceId)
+      .single();
 
-    if (deviceError) {
-      console.error(
-        `[Verify API] Error checking device: ${deviceError.message}`
-      );
+    if (deviceError && deviceError.code !== "PGRST116") {
+      // PGRST116 is "not found" error, which is expected if device doesn't exist
+      console.error(`[Device Verify] Database error:`, deviceError);
       throw deviceError;
     }
 
     const exists = !!device;
     console.log(
-      `[Verify API] Device ${deviceId} for user ${userId} exists: ${exists}`
+      `[Device Verify] Device ${deviceId} for user ${userId} exists: ${exists}`
     );
 
-    return res.status(200).json({ exists });
-  } catch (err) {
-    console.error("[Verify API] Handler error:", err);
+    return res.status(200).json({
+      exists,
+      device: exists ? device : null,
+    });
+  } catch (error) {
+    console.error("[Device Verify] Error:", error);
     return res.status(500).json({
-      error: err.message || "Internal Server Error",
+      error: "Failed to verify device",
+      details: error.message,
     });
   }
 }

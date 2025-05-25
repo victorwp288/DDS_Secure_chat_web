@@ -23,21 +23,6 @@ export default async function handler(req, res) {
       `[Cleanup API] Force cleaning up ALL devices for user ${userId}...`
     );
 
-    // Debug: Check environment variables
-    console.log(
-      `[Cleanup API] SUPABASE_URL exists: ${!!process.env.SUPABASE_URL}`
-    );
-    console.log(
-      `[Cleanup API] SUPABASE_SERVICE_ROLE_KEY exists: ${!!process.env
-        .SUPABASE_SERVICE_ROLE_KEY}`
-    );
-
-    // Debug: Check if supabaseAdmin is properly initialized
-    if (!supabaseAdmin) {
-      console.error("[Cleanup API] supabaseAdmin is not initialized!");
-      throw new Error("Database connection not available");
-    }
-
     // Get all devices for this user
     const { data: devices, error: devicesError } = await supabaseAdmin
       .from("devices")

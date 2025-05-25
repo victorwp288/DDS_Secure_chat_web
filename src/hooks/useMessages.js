@@ -210,23 +210,40 @@ export function useMessages(
       setLoading(true);
       setError(null);
       try {
+        // Load all messages for this conversation, not just for current device
+        // This allows us to see messages sent to previous device IDs after device cleanup
         const { data, error: messagesError } = await supabase
           .from("messages")
           .select(
             `id, body, type, created_at, profile_id, device_id, target_device_id, profiles ( id, full_name, username, avatar_url )`
           )
           .eq("conversation_id", selectedConversation.id)
-          .eq("target_device_id", deviceId)
           .order("created_at", { ascending: true });
 
-        console.log("[useMessages] raw rows after filtering:", data);
-
         if (messagesError) throw messagesError;
+
+        // Filter messages to include:
+        // 1. Messages sent BY the current user (regardless of target_device_id)
+        // 2. Messages sent TO the current user (any device belonging to current user)
+        const filteredData = data.filter((msg) => {
+          const isSentByCurrentUser = msg.profile_id === currentUser.id;
+          const isSentToCurrentUser =
+            msg.target_device_id &&
+            // We'll assume any message in this conversation targeting a device is for the current user
+            // since we're in a conversation where the current user is a participant
+            selectedConversation.participants.some(
+              (p) => p.id === currentUser.id
+            );
+
+          return isSentByCurrentUser || isSentToCurrentUser;
+        });
+
+        console.log("[useMessages] raw rows after filtering:", filteredData);
 
         // Debug: Show what messages we're working with
         console.log(
           `[useMessages] Database messages for conversation ${selectedConversation.id}:`,
-          data.map((msg) => ({
+          filteredData.map((msg) => ({
             id: msg.id,
             profile_id: msg.profile_id,
             device_id: msg.device_id,
@@ -262,7 +279,7 @@ export function useMessages(
         const allMessagesMap = new Map();
 
         // First add database messages
-        for (const msg of data) {
+        for (const msg of filteredData) {
           const messageId = msg.id;
           allMessagesMap.set(messageId, {
             source: "database",
@@ -291,7 +308,7 @@ export function useMessages(
         }
 
         console.log(
-          `[useMessages] Combined ${allMessagesMap.size} unique messages from ${data.length} DB + ${cachedMessages.length} cached`
+          `[useMessages] Combined ${allMessagesMap.size} unique messages from ${filteredData.length} DB + ${cachedMessages.length} cached`
         );
 
         // Convert map to array and process each message
@@ -441,93 +458,110 @@ export function useMessages(
                     "[Decryption Failed - Bad MAC / Wrong Key]";
                 } else if (
                   decryptionError.message?.includes("Bad MAC") ||
-                  decryptionError.message?.includes("No record for device")
+                  decryptionError.message?.includes("No record for device") ||
+                  decryptionError.message?.includes("Missing Signed PreKey")
                 ) {
                   const errorType = decryptionError.message?.includes("Bad MAC")
                     ? "Bad MAC"
-                    : "No record for device";
+                    : decryptionError.message?.includes("No record for device")
+                    ? "No record for device"
+                    : "Missing Signed PreKey";
+
                   console.warn(
                     `[useMessages Recover] ${errorType} detected for ${addrStr} (msg ID: ${msg.id}), attempting session reset and retry...`
                   );
-                  try {
-                    await signalStore.removeSession(addrStr);
-                    console.log(
-                      `[useMessages Recover] Removed session for ${addrStr}.`
-                    );
 
-                    const peerBundlesData = await get(
-                      `/signal/bundles/${msg.profile_id}`
-                    );
-                    if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
-                      throw new Error(
-                        `[useMessages Recover] No valid bundles array found for peer ${msg.profile_id}.`
-                      );
-                    }
-
-                    const bundleMap = bundlesToMap(peerBundlesData);
-                    const bundleForDevice = bundleMap.get(senderDeviceIdNum);
-                    if (!bundleForDevice) {
-                      throw new Error(
-                        `[useMessages Recover] Bundle not found for ${addrStr} (Device ID: ${senderDeviceIdNum}) after fetching.`
-                      );
-                    }
-
-                    console.log(
-                      `[useMessages Recover] Fetched bundle for ${addrStr}.`
-                    );
-                    const sessionResult = await safeProcessPreKey(
-                      signalStore,
-                      msg.profile_id,
-                      senderDeviceIdNum,
-                      bundleForDevice
-                    );
-
-                    if (!sessionResult) {
-                      console.warn(
-                        `[useMessages Recover] Failed to rebuild session for ${addrStr}, skipping decryption retry.`
-                      );
-                      processedContent = "[Session Recovery Failed]";
-                    } else {
-                      console.log(
-                        `[useMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
-                      );
-
-                      const plaintextBufferRetry = await decryptMessage(
-                        signalStore,
-                        currentUser.id,
-                        deviceId,
-                        msg.profile_id,
-                        senderDeviceIdNum,
-                        { type: msg.type, body: bodyUint8Array }
-                      );
-
-                      if (plaintextBufferRetry) {
-                        processedContent =
-                          arrayBufferToString(plaintextBufferRetry);
-                        await cacheSentMessage(currentUser.id, {
-                          id: msg.id,
-                          content: processedContent,
-                          conversationId: selectedConversation.id,
-                          timestamp: msg.created_at,
-                        });
-                        console.log(
-                          `[useMessages Recover] Decryption successful for ${addrStr} after retry.`
-                        );
-                      } else {
-                        processedContent =
-                          "[Decryption Failed After Retry - No Buffer]";
-                        console.warn(
-                          `[useMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
-                        );
-                      }
-                    }
-                  } catch (recoveryError) {
-                    console.error(
-                      `[useMessages Recover] Error during recovery for ${addrStr}: ${recoveryError.message}`,
-                      recoveryError
+                  // For Missing Signed PreKey errors, this usually means the device was cleaned up
+                  // and the old keys no longer exist. We should show a more user-friendly message.
+                  if (
+                    decryptionError.message?.includes("Missing Signed PreKey")
+                  ) {
+                    console.warn(
+                      `[useMessages] Missing Signed PreKey for ${addrStr} - likely due to device cleanup. Message cannot be decrypted.`
                     );
                     processedContent =
-                      "[Decryption Error After Recovery Attempt]";
+                      "[Decryption Failed - Device Keys Changed]";
+                  } else {
+                    try {
+                      await signalStore.removeSession(addrStr);
+                      console.log(
+                        `[useMessages Recover] Removed session for ${addrStr}.`
+                      );
+
+                      const peerBundlesData = await get(
+                        `/signal/bundles/${msg.profile_id}`
+                      );
+                      if (!peerBundlesData || !Array.isArray(peerBundlesData)) {
+                        throw new Error(
+                          `[useMessages Recover] No valid bundles array found for peer ${msg.profile_id}.`
+                        );
+                      }
+
+                      const bundleMap = bundlesToMap(peerBundlesData);
+                      const bundleForDevice = bundleMap.get(senderDeviceIdNum);
+                      if (!bundleForDevice) {
+                        throw new Error(
+                          `[useMessages Recover] Bundle not found for ${addrStr} (Device ID: ${senderDeviceIdNum}) after fetching.`
+                        );
+                      }
+
+                      console.log(
+                        `[useMessages Recover] Fetched bundle for ${addrStr}.`
+                      );
+                      const sessionResult = await safeProcessPreKey(
+                        signalStore,
+                        msg.profile_id,
+                        senderDeviceIdNum,
+                        bundleForDevice
+                      );
+
+                      if (!sessionResult) {
+                        console.warn(
+                          `[useMessages Recover] Failed to rebuild session for ${addrStr}, skipping decryption retry.`
+                        );
+                        processedContent = "[Session Recovery Failed]";
+                      } else {
+                        console.log(
+                          `[useMessages Recover] Session rebuilt for ${addrStr} via safeProcessPreKey.`
+                        );
+
+                        const plaintextBufferRetry = await decryptMessage(
+                          signalStore,
+                          currentUser.id,
+                          deviceId,
+                          msg.profile_id,
+                          senderDeviceIdNum,
+                          { type: msg.type, body: bodyUint8Array }
+                        );
+
+                        if (plaintextBufferRetry) {
+                          processedContent =
+                            arrayBufferToString(plaintextBufferRetry);
+                          await cacheSentMessage(currentUser.id, {
+                            id: msg.id,
+                            content: processedContent,
+                            conversationId: selectedConversation.id,
+                            timestamp: msg.created_at,
+                          });
+                          console.log(
+                            `[useMessages Recover] Decryption successful for ${addrStr} after retry.`
+                          );
+                        } else {
+                          processedContent =
+                            "[Decryption Failed After Retry - No Buffer]";
+                          console.warn(
+                            `[useMessages Recover] Decryption for ${addrStr} still failed after retry (no buffer).`
+                          );
+                        }
+                      }
+                    } catch (recoveryError) {
+                      console.error(
+                        `[useMessages Recover] Error during recovery for ${addrStr}: ${recoveryError.message}`,
+                        recoveryError
+                      );
+                      processedContent =
+                        "[Decryption Error After Recovery Attempt]";
+                    }
                   }
                 } else {
                   console.error(

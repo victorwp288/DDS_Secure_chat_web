@@ -18,8 +18,7 @@ export async function notifyParticipantsOfDeviceChange(userId, newDeviceId) {
         `
         conversation_id,
         conversations!inner(
-          id,
-          type
+          id
         )
       `
       )

@@ -45,7 +45,7 @@ export function ChatHeader({
       !getUserPresence ||
       !isUserOnline
     ) {
-      return "Offline (no data)";
+      return "Offline";
     }
 
     if (selectedConversation.is_group) {
@@ -68,20 +68,12 @@ export function ChatHeader({
         const presence = getUserPresence(otherParticipant.id);
         const isOnline = isUserOnline(otherParticipant.id);
 
-        // Debug info
-        console.log(`[ChatHeader] Presence for ${otherParticipant.id}:`, {
-          presence,
-          isOnline,
-          status: presence.status,
-          lastSeen: presence.lastSeen,
-        });
-
         if (isOnline) {
           return "Online";
         }
-        return `Offline (${presence.status || "unknown"})`;
+        return "Offline";
       }
-      return "Offline (no participant)";
+      return "Offline";
     }
   };
 
@@ -431,6 +423,7 @@ export function ChatHeader({
                     className="w-full justify-start text-blue-400 hover:text-blue-300 hover:bg-blue-900/20"
                     onClick={handleClearSessions}
                     disabled={isClearingSessions}
+                    title="Clear encryption sessions to fix message decryption issues"
                   >
                     <MessageSquare className="mr-2 h-4 w-4" />
                     {isClearingSessions ? "Clearing..." : "Clear Sessions"}
@@ -442,6 +435,7 @@ export function ChatHeader({
                     className="w-full justify-start text-orange-400 hover:text-orange-300 hover:bg-orange-900/20"
                     onClick={handleForceCleanup}
                     disabled={isCleaningUp}
+                    title="Reset all your devices and encryption keys (requires page refresh)"
                   >
                     <Trash2 className="mr-2 h-4 w-4" />
                     {isCleaningUp ? "Cleaning..." : "Fix Device Issues"}
