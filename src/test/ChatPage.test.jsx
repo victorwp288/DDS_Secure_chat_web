@@ -17,9 +17,34 @@ const {
       select: vi.fn(() => ({
         eq: vi.fn(() => ({
           single: vi.fn(),
+          order: vi.fn(() => Promise.resolve({ data: [], error: null })),
         })),
+        order: vi.fn(() => Promise.resolve({ data: [], error: null })),
+      })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ data: [], error: null })),
+      })),
+      insert: vi.fn(() => Promise.resolve({ data: [], error: null })),
+      delete: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ data: [], error: null })),
       })),
     })),
+    channel: vi.fn(() => ({
+      on: vi.fn(() => ({
+        on: vi.fn(() => ({
+          subscribe: vi.fn(),
+        })),
+        subscribe: vi.fn(),
+      })),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    })),
+    auth: {
+      getUser: vi.fn(() =>
+        Promise.resolve({ data: { user: null }, error: null })
+      ),
+      signOut: vi.fn(() => Promise.resolve({ error: null })),
+    },
   };
 
   const mockUseMobile = vi.fn(() => false);
@@ -112,6 +137,21 @@ vi.mock("../hooks/useSendMessage", () => ({
 
 vi.mock("../hooks/useRealtimeSubscriptions", () => ({
   useRealtimeSubscriptions: vi.fn(),
+}));
+
+vi.mock("../hooks/usePresence", () => ({
+  usePresence: vi.fn(),
+}));
+
+vi.mock("../hooks/useDeviceChangeNotifications", () => ({
+  useDeviceChangeNotifications: vi.fn(),
+}));
+
+vi.mock("../hooks/useUserPresence", () => ({
+  useUserPresence: vi.fn(() => ({
+    getUserPresence: vi.fn(),
+    isUserOnline: vi.fn(() => false),
+  })),
 }));
 
 import ChatPage from "../pages/ChatPage";
@@ -311,7 +351,7 @@ describe("ChatPage", () => {
     renderWithRouter(<ChatPage />);
 
     // Should render mobile layout
-    const chatContainer = document.querySelector(".flex.h-screen");
+    const chatContainer = document.querySelector(".flex.h-screen-mobile");
     expect(chatContainer).toBeInTheDocument();
   });
 
@@ -363,7 +403,7 @@ describe("ChatPage", () => {
     renderWithRouter(<ChatPage />);
 
     // Should display all conversations - check if sidebar is rendered
-    const chatContainer = document.querySelector(".flex.h-screen");
+    const chatContainer = document.querySelector(".flex.h-screen-mobile");
     expect(chatContainer).toBeInTheDocument();
 
     // Look for conversation names in the rendered output
@@ -404,7 +444,7 @@ describe("ChatPage", () => {
     renderWithRouter(<ChatPage />);
 
     // Should display pending conversation with accept/reject buttons
-    const chatContainer = document.querySelector(".flex.h-screen");
+    const chatContainer = document.querySelector(".flex.h-screen-mobile");
     expect(chatContainer).toBeInTheDocument();
 
     // Look for conversation name and buttons
@@ -428,7 +468,7 @@ describe("ChatPage", () => {
     renderWithRouter(<ChatPage />);
 
     // Should handle empty state
-    const chatContainer = document.querySelector(".flex.h-screen");
+    const chatContainer = document.querySelector(".flex.h-screen-mobile");
     expect(chatContainer).toBeInTheDocument();
   });
 });

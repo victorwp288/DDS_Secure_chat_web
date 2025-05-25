@@ -28,6 +28,13 @@ const { mockFrom, mockSelect, mockEq, mockOrder, mockSignalUtils, mockDB } =
 vi.mock("../lib/supabaseClient", () => ({
   supabase: {
     from: mockFrom,
+    channel: vi.fn(() => ({
+      on: vi.fn(() => ({
+        subscribe: vi.fn(),
+      })),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    })),
   },
 }));
 
@@ -46,29 +53,19 @@ describe("useMessages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Setup default chain: from().select().eq().eq().order()
-    mockFrom.mockReturnValue({
-      select: mockSelect,
-    });
-
-    const mockChainAfterSelect = {
-      eq: mockEq,
-    };
-
-    const mockChainAfterFirstEq = {
-      eq: mockEq,
-    };
-
-    const mockChainAfterSecondEq = {
+    // Setup correct chain: from().select().eq().order()
+    const mockChainAfterEq = {
       order: mockOrder,
     };
 
-    mockSelect.mockReturnValue(mockChainAfterSelect);
+    const mockChainAfterSelect = {
+      eq: vi.fn(() => mockChainAfterEq),
+    };
 
-    // First .eq() call returns a chain that has another .eq()
-    mockEq.mockReturnValueOnce(mockChainAfterFirstEq);
-    // Second .eq() call returns a chain that has .order()
-    mockEq.mockReturnValueOnce(mockChainAfterSecondEq);
+    mockSelect.mockReturnValue(mockChainAfterSelect);
+    mockFrom.mockReturnValue({
+      select: mockSelect,
+    });
 
     mockOrder.mockResolvedValue({ data: [], error: null });
     mockDB.getCachedMessageContent.mockResolvedValue(null);

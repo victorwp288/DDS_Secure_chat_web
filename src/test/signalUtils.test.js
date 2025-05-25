@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { TextEncoder, TextDecoder } from "util";
 import {
   arrayBufferToString,
   stringToArrayBuffer,
